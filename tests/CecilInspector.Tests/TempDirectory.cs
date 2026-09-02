@@ -27,9 +27,25 @@ internal sealed class TempDirectory : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(Path))
+        for (var attempt = 0; ; attempt++)
         {
-            Directory.Delete(Path, true);
+            try
+            {
+                if (Directory.Exists(Path))
+                {
+                    Directory.Delete(Path, true);
+                }
+
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 5)
+            {
+                // Mono.Cecil does not dispose the PDB stream when a symbol read fails, so on
+                // Windows the file stays locked until the finalizer runs. Finalize and retry.
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                Thread.Sleep(50 * (attempt + 1));
+            }
         }
     }
 }

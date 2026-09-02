@@ -52,7 +52,7 @@ public sealed class OutputFileTests
     public void CommitPublishesUtf8ReportWithoutBomAndRemovesPartialFile()
     {
         using var temp = new TempDirectory();
-        var output = temp.File("nested/report.txt");
+        var output = Path.Combine(temp.Path, "nested", "report.txt");
 
         using (var report = OutputFile.OpenAtomic(output))
         {
@@ -84,6 +84,10 @@ public sealed class OutputFileTests
     [Fact]
     public void RefusesToCommitWhenPartialPathIsReplacedBySymbolicLink()
     {
+        // On Windows the FileShare.None handle held while writing makes the swap impossible
+        // (File.Move fails with "in use"), so this scenario only exists on Unix file systems.
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "排他ロックにより Windows では一時ファイルを差し替えられない。");
+
         using var temp = new TempDirectory();
         var output = temp.File("report.txt");
         var attacker = temp.File("attacker.txt");
