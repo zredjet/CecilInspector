@@ -143,7 +143,8 @@ public sealed class CliProcessTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("警告:", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("情報:", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("警告:", result.StandardError, StringComparison.Ordinal);
         Assert.Contains("シンボルなしで解析", result.StandardError, StringComparison.Ordinal);
     }
 
@@ -213,7 +214,149 @@ public sealed class CliProcessTests
         Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
     }
 
-    private static async Task<ProcessResult> RunAsync(params string[] arguments)
+    [Fact]
+    public async Task HelpExampleWithOptionsAfterSeparatorRuns()
+    {
+        var result = await RunAsync("search", TestAssembly, "--", "-Prefixed", "--match", "exact", "--symbols", "off");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Query: -Prefixed", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Match: Exact", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public async Task SeparatorIsNotWrittenAsAReportFile()
+    {
+        using var temp = new TempDirectory();
+
+        var result = await RunAsync(new RunOptions(WorkingDirectory: temp.Path), "dump", TestAssembly, "--output", "--");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("--outputにはファイルパスが必要", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    [Fact]
+    public async Task EmptyOutputPathIsAnArgumentError()
+    {
+        var result = await RunAsync("search", TestAssembly, "Estimate", "--symbols", "off", "--output", "");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("--outputにはファイルパスが必要", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("Parameter", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RepeatedKindsAreCombined()
+    {
+        var result = await RunAsync(
+            "search", TestAssembly, "EstimateTarget", "--kind", "method", "--kind=type", "--match", "exact", "--symbols", "off");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Kinds: Type, Method", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NoArgumentsIsAnArgumentError()
+    {
+        var result = await RunAsync();
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("エラー:", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("使用方法", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AllTargetsFailingUsesExitCodeTwo()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+
+        var result = await RunAsync("search", temp.Path, "Anything", "--symbols", "off");
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("Assemblies: 0/1 succeeded", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("警告: ", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("情報: ", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DebugEnvironmentPrintsTheExceptionBehindAWarning()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        var environment = new Dictionary<string, string> { ["CECIL_INSPECTOR_DEBUG"] = "1" };
+
+        var plain = await RunAsync("dump", temp.Path, "--symbols", "off");
+        var debug = await RunAsync(new RunOptions(Environment: environment), "dump", temp.Path, "--symbols", "off");
+
+        Assert.Equal(2, plain.ExitCode);
+        Assert.Equal(2, debug.ExitCode);
+        Assert.DoesNotContain("Exception", plain.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Exception", debug.StandardError, StringComparison.Ordinal);
+        Assert.Contains("\n    ", debug.StandardError.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InterruptedRunLeavesNoPartialReport()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "SIGTERM を送る手段が無く、Ctrl-C は同じコンソールの全プロセスへ届く。");
+
+        using var temp = new TempDirectory();
+        var output = temp.File("report.txt");
+        var input = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var process = Start("dump", input, "--include-il", "--symbols", "off", "--output", output);
+        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
+
+        // Wait until the report is being written, then interrupt while the dump is still running.
+        var started = DateTime.UtcNow;
+        while (Directory.GetFiles(temp.Path, "*.partial").Length == 0)
+        {
+            if (process.HasExited)
+            {
+                // Awaiting stderr only here: doing so in the message would wait for the process to end.
+                Assert.Fail($"ダンプが中断前に終了した (exit={process.ExitCode}): {await standardError}");
+            }
+
+            Assert.True(DateTime.UtcNow - started < ProcessTimeout, "一時ファイルが作られなかった。");
+            await Task.Delay(20, cancellationToken);
+        }
+
+        using (var kill = Process.Start("kill", ["-TERM", process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)]))
+        {
+            Assert.NotNull(kill);
+            await kill.WaitForExitAsync(cancellationToken);
+        }
+
+        await WaitForExitAsync(process, ["dump", input]);
+
+        Assert.Equal(130, process.ExitCode);
+        Assert.Contains("中断しました", await standardError, StringComparison.Ordinal);
+        Assert.False(File.Exists(output));
+        Assert.Empty(Directory.GetFiles(temp.Path, "*.partial"));
+        _ = await standardOutput;
+    }
+
+    private static Task<ProcessResult> RunAsync(params string[] arguments) => RunAsync(new RunOptions(), arguments);
+
+    private static async Task<ProcessResult> RunAsync(RunOptions options, params string[] arguments)
+    {
+        using var process = Start(options, arguments);
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        await WaitForExitAsync(process, arguments);
+        return new ProcessResult(process.ExitCode, await standardOutput, await standardError);
+    }
+
+    private static Process Start(params string[] arguments) => Start(new RunOptions(), arguments);
+
+    private static Process Start(RunOptions options, params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("dotnet")
         {
@@ -229,10 +372,22 @@ public sealed class CliProcessTests
 
         startInfo.Environment["DOTNET_NOLOGO"] = "1";
         startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+        startInfo.Environment.Remove("CECIL_INSPECTOR_DEBUG");
+        foreach (var (name, value) in options.Environment ?? new Dictionary<string, string>())
+        {
+            startInfo.Environment[name] = value;
+        }
 
-        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("dotnetを起動できませんでした。");
-        var standardOutput = process.StandardOutput.ReadToEndAsync();
-        var standardError = process.StandardError.ReadToEndAsync();
+        if (options.WorkingDirectory is not null)
+        {
+            startInfo.WorkingDirectory = options.WorkingDirectory;
+        }
+
+        return Process.Start(startInfo) ?? throw new InvalidOperationException("dotnetを起動できませんでした。");
+    }
+
+    private static async Task WaitForExitAsync(Process process, string[] arguments)
+    {
         using var timeout = new CancellationTokenSource(ProcessTimeout);
         try
         {
@@ -244,11 +399,11 @@ public sealed class CliProcessTests
             throw new TimeoutException(
                 $"cecil-inspector が{ProcessTimeout.TotalSeconds:0}秒以内に終了しませんでした: {string.Join(' ', arguments)}");
         }
-
-        return new ProcessResult(process.ExitCode, await standardOutput, await standardError);
     }
 
     private static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(60);
+
+    private sealed record RunOptions(string? WorkingDirectory = null, IReadOnlyDictionary<string, string>? Environment = null);
 
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 }

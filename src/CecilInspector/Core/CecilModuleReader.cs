@@ -32,13 +32,13 @@ internal static class CecilModuleReader
             }
             catch (SymbolsNotFoundException) when (symbolMode == SymbolMode.Required)
             {
-                throw new SymbolsNotFoundException($"PDBが見つかりません: {filePath}");
+                throw new SymbolsNotFoundException(MissingPdbMessage(filePath));
             }
 
             if (symbolMode == SymbolMode.Required && !module.HasSymbols)
             {
                 module.Dispose();
-                throw new SymbolsNotFoundException($"PDBが見つかりません: {filePath}");
+                throw new SymbolsNotFoundException(MissingPdbMessage(filePath));
             }
 
             return module;
@@ -62,6 +62,9 @@ internal static class CecilModuleReader
             }
         }
     }
+
+    private static string MissingPdbMessage(string filePath) =>
+        $"PDBが見つかりません: {Path.ChangeExtension(filePath, ".pdb")} (埋め込みPDBもありません)";
 
     private static ModuleDefinition ReadCore(
         string filePath,

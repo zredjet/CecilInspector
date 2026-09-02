@@ -57,19 +57,51 @@ internal sealed class TeeTextWriter(TextWriter first, TextWriter second) : TextW
         first.Flush();
         second.Flush();
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Flush();
+        }
+
+        base.Dispose(disposing);
+    }
 }
 
 /// <summary>
 /// Converts I/O failures of the underlying writer into <see cref="ReportWriteException"/> so the
 /// analysis loop can tell "the report cannot be written" apart from "this assembly is broken".
+/// Every overload wraps the call inline: a dump with --include-il writes one line per IL
+/// instruction, so a delegate-plus-closure per call would be the dominant allocation.
 /// </summary>
 internal sealed class GuardedTextWriter(TextWriter inner) : TextWriter
 {
     public override Encoding Encoding => inner.Encoding;
 
-    public override void Write(char value) => Guard(() => inner.Write(value));
+    public override void Write(char value)
+    {
+        try
+        {
+            inner.Write(value);
+        }
+        catch (Exception ex) when (IsWriteFailure(ex))
+        {
+            throw Wrap(ex);
+        }
+    }
 
-    public override void Write(char[] buffer, int index, int count) => Guard(() => inner.Write(buffer, index, count));
+    public override void Write(char[] buffer, int index, int count)
+    {
+        try
+        {
+            inner.Write(buffer, index, count);
+        }
+        catch (Exception ex) when (IsWriteFailure(ex))
+        {
+            throw Wrap(ex);
+        }
+    }
 
     public override void Write(ReadOnlySpan<char> buffer)
     {
@@ -83,11 +115,41 @@ internal sealed class GuardedTextWriter(TextWriter inner) : TextWriter
         }
     }
 
-    public override void Write(string? value) => Guard(() => inner.Write(value));
+    public override void Write(string? value)
+    {
+        try
+        {
+            inner.Write(value);
+        }
+        catch (Exception ex) when (IsWriteFailure(ex))
+        {
+            throw Wrap(ex);
+        }
+    }
 
-    public override void WriteLine() => Guard(inner.WriteLine);
+    public override void WriteLine()
+    {
+        try
+        {
+            inner.WriteLine();
+        }
+        catch (Exception ex) when (IsWriteFailure(ex))
+        {
+            throw Wrap(ex);
+        }
+    }
 
-    public override void WriteLine(string? value) => Guard(() => inner.WriteLine(value));
+    public override void WriteLine(string? value)
+    {
+        try
+        {
+            inner.WriteLine(value);
+        }
+        catch (Exception ex) when (IsWriteFailure(ex))
+        {
+            throw Wrap(ex);
+        }
+    }
 
     public override void WriteLine(ReadOnlySpan<char> buffer)
     {
@@ -101,13 +163,11 @@ internal sealed class GuardedTextWriter(TextWriter inner) : TextWriter
         }
     }
 
-    public override void Flush() => Guard(inner.Flush);
-
-    private static void Guard(Action action)
+    public override void Flush()
     {
         try
         {
-            action();
+            inner.Flush();
         }
         catch (Exception ex) when (IsWriteFailure(ex))
         {

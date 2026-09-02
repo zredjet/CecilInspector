@@ -1,10 +1,16 @@
 namespace CecilInspector.Core;
 
+/// <param name="InputIsFile">
+/// True when the input path named a single assembly rather than a folder. Only then are the
+/// secondary netmodules of a multi-module assembly followed; for a folder they are discovered
+/// as files of their own.
+/// </param>
 public sealed record AssemblyDiscoveryResult(
     IReadOnlyList<string> Files,
     int FileCount,
     IReadOnlyList<string> SearchDirectories,
-    IReadOnlyList<ScanError> Errors);
+    IReadOnlyList<ScanError> Errors,
+    bool InputIsFile = false);
 
 public static class AssemblyFiles
 {
@@ -12,6 +18,9 @@ public static class AssemblyFiles
     {
         ".dll", ".exe", ".netmodule",
     };
+
+    /// <summary>True for the file extensions that discovery treats as assemblies (.dll/.exe/.netmodule).</summary>
+    public static bool IsAssemblyFileName(string path) => Extensions.Contains(Path.GetExtension(path));
 
     public static AssemblyDiscoveryResult DiscoverDetailed(string inputPath, bool recursive)
     {
@@ -22,7 +31,8 @@ public static class AssemblyFiles
                 [fullPath],
                 1,
                 [Path.GetDirectoryName(fullPath)!],
-                []);
+                [],
+                InputIsFile: true);
         }
 
         if (!Directory.Exists(fullPath))

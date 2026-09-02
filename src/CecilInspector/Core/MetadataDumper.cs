@@ -7,26 +7,22 @@ namespace CecilInspector.Core;
 
 public sealed class MetadataDumper
 {
-    public DumpResult Dump(DumpOptions options, AssemblyDiscoveryResult discovery, TextWriter writer) =>
-        Dump(options, discovery.Files, discovery.FileCount, discovery.SearchDirectories, discovery.Errors, writer);
-
     public DumpResult Dump(
         DumpOptions options,
-        IEnumerable<string> files,
-        int filesDiscovered,
-        IReadOnlyList<string> searchDirectories,
-        IReadOnlyList<ScanError> discoveryErrors,
-        TextWriter writer)
+        AssemblyDiscoveryResult discovery,
+        TextWriter writer,
+        CancellationToken cancellationToken = default)
     {
         var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
         writer = new GuardedTextWriter(writer);
-        var errors = new List<ScanError>(discoveryErrors);
+        var errors = new List<ScanError>(discovery.Errors);
         var warnings = new List<ScanError>();
         var succeeded = 0;
 
-        foreach (var file in files)
+        foreach (var file in discovery.Files)
         {
-            using var resolver = CecilResolverFactory.Create(file, referenceDirectories, searchDirectories);
+            cancellationToken.ThrowIfCancellationRequested();
+            using var resolver = CecilResolverFactory.Create(file, referenceDirectories, discovery.SearchDirectories);
             try
             {
                 using var module = CecilModuleReader.Read(file, options.SymbolMode, resolver, out var symbolWarning);
@@ -35,10 +31,19 @@ public sealed class MetadataDumper
                     warnings.Add(new ScanError(file, symbolWarning));
                 }
 
-                AppendModule(writer, module, file, options.IncludeIl);
-                if (filesDiscovered == 1 && module.Assembly is not null)
+                AppendModule(writer, module, file, options.IncludeIl, cancellationToken);
+                if (discovery.InputIsFile)
                 {
-                    AppendSecondaryModules(writer, module, file, options.IncludeIl, errors);
+                    SecondaryModules.ForEach(
+                        module,
+                        file,
+                        (secondary, moduleFile) => AppendModule(writer, secondary, moduleFile, options.IncludeIl, cancellationToken),
+                        error =>
+                        {
+                            errors.Add(error);
+                            writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(error.FilePath)}");
+                        },
+                        cancellationToken);
                 }
 
                 succeeded++;
@@ -50,45 +55,39 @@ public sealed class MetadataDumper
             }
         }
 
-        writer.WriteLine($"Summary: discovered={filesDiscovered}, succeeded={succeeded}, errors={errors.Count}");
-        return new DumpResult(errors, filesDiscovered, succeeded, warnings);
+        writer.WriteLine($"Summary: discovered={discovery.FileCount}, succeeded={succeeded}, errors={errors.Count}");
+        return new DumpResult(errors, discovery.FileCount, succeeded, warnings);
     }
 
-    private static void AppendSecondaryModules(
+    /// <summary>
+    /// Convenience overload over an explicit file list. Secondary netmodules are followed only
+    /// when the list is a single file that was also the only one discovered, matching what
+    /// <see cref="AssemblyFiles.DiscoverDetailed"/> reports for a single-file input.
+    /// </summary>
+    public DumpResult Dump(
+        DumpOptions options,
+        IEnumerable<string> files,
+        int filesDiscovered,
+        IReadOnlyList<string> searchDirectories,
+        IReadOnlyList<ScanError> discoveryErrors,
+        TextWriter writer)
+    {
+        var fileList = files.ToList();
+        var discovery = new AssemblyDiscoveryResult(
+            fileList,
+            filesDiscovered,
+            searchDirectories,
+            discoveryErrors,
+            InputIsFile: fileList.Count == 1 && filesDiscovered == 1);
+        return Dump(options, discovery, writer);
+    }
+
+    private static void AppendModule(
         TextWriter writer,
-        ModuleDefinition manifestModule,
+        ModuleDefinition module,
         string file,
         bool includeIl,
-        List<ScanError> errors)
-    {
-        ModuleDefinition[] secondaryModules;
-        try
-        {
-            secondaryModules = manifestModule.Assembly.Modules.Where(candidate => candidate != manifestModule).ToArray();
-        }
-        catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
-        {
-            errors.Add(new ScanError(file, $"secondary netmoduleを読み込めません: {ex.Message}"));
-            writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(file)}");
-            return;
-        }
-
-        foreach (var secondaryModule in secondaryModules)
-        {
-            var moduleFile = secondaryModule.FileName ?? file;
-            try
-            {
-                AppendModule(writer, secondaryModule, moduleFile, includeIl);
-            }
-            catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
-            {
-                errors.Add(new ScanError(moduleFile, ex.Message));
-                writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(moduleFile)}");
-            }
-        }
-    }
-
-    private static void AppendModule(TextWriter writer, ModuleDefinition module, string file, bool includeIl)
+        CancellationToken cancellationToken)
     {
         writer.WriteLine($"Assembly: {TextSanitizer.Escape(module.Assembly?.Name.FullName ?? "(netmodule)")}");
         writer.WriteLine($"File: {TextSanitizer.Escape(file)}");
@@ -111,16 +110,21 @@ public sealed class MetadataDumper
         }
 
         writer.WriteLine("Types:");
-        AppendTypes(writer, module.Types, includeIl);
+        AppendTypes(writer, module.Types, includeIl, cancellationToken);
 
         writer.WriteLine();
     }
 
-    private static void AppendTypes(TextWriter writer, IEnumerable<TypeDefinition> roots, bool includeIl)
+    private static void AppendTypes(
+        TextWriter writer,
+        IEnumerable<TypeDefinition> roots,
+        bool includeIl,
+        CancellationToken cancellationToken)
     {
         var stack = new Stack<(TypeDefinition Type, int Depth)>(roots.Reverse().Select(type => (type, 1)));
         while (stack.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var (type, depth) = stack.Pop();
             AppendType(writer, type, Indent(depth), includeIl);
             for (var index = type.NestedTypes.Count - 1; index >= 0; index--)
@@ -184,8 +188,10 @@ public sealed class MetadataDumper
                     writer.WriteLine($"{indent}    IL_{instruction.Offset:X4}: {instruction.OpCode}{operand}{source}");
                 }
             }
-        }
 
+            // Reading the location (and the IL) decoded the body; nothing needs it again.
+            method.ReleaseBody();
+        }
     }
 
     private static string Indent(int depth) => depth <= 40

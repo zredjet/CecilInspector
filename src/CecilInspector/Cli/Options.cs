@@ -81,6 +81,10 @@ public sealed record ParseResult(AppOptions? Options, string? Error, bool ShowVe
     public bool IsSuccess => Options is not null;
 
     public static ParseResult Success(AppOptions options) => new(options, null);
+    /// <summary>True when help was requested (or is implied), so the caller prints usage and exits 0.</summary>
+    public bool IsHelp => Options is null && Error is null && !ShowVersion;
+
     public static ParseResult Failure(string? error) => new(null, error);
+    public static ParseResult Help() => new(null, null);
     public static ParseResult Version() => new(null, null, true);
 }

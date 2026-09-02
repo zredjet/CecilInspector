@@ -16,7 +16,10 @@ public sealed class AssemblySearcher
     /// Searches an already discovered input. Callers that need to validate every option before
     /// any long-running work (the CLI) discover and validate up front, then pass the result here.
     /// </summary>
-    public SearchResult Search(SearchOptions options, AssemblyDiscoveryResult discovery)
+    public SearchResult Search(
+        SearchOptions options,
+        AssemblyDiscoveryResult discovery,
+        CancellationToken cancellationToken = default)
     {
         var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
         var files = discovery.Files;
@@ -31,10 +34,17 @@ public sealed class AssemblySearcher
 
         foreach (var file in files)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var resolver = CecilResolverFactory.Create(file, referenceDirectories, discovery.SearchDirectories);
+
+            // Hits are staged per file and merged whether or not the file completes: a failure
+            // part-way through still reports what was found before it (the file is listed as an
+            // error and the exit code says the result is incomplete). The stage only needs the
+            // capacity the report can still show, so files past the --max-results limit do not
+            // materialize containers and locations that would be dropped on merge.
+            var fileHits = new SearchHitCollector(hits.RemainingCapacity);
             try
             {
-                var fileHits = new SearchHitCollector(options.MaxResults);
                 var fileHasSymbols = false;
                 using (var module = CecilModuleReader.Read(file, symbolMode, resolver, out var symbolWarning))
                 {
@@ -43,16 +53,21 @@ public sealed class AssemblySearcher
                         warnings.Add(new ScanError(file, symbolWarning));
                     }
 
-                    SearchModule(module, file, options, matcher, fileHits, resolutionDiagnostics);
-                    if (files.Count == 1 && module.Assembly is not null)
+                    SearchModule(module, file, options, matcher, fileHits, resolutionDiagnostics, cancellationToken);
+                    if (discovery.InputIsFile)
                     {
-                        SearchSecondaryModules(module, file, options, matcher, fileHits, resolutionDiagnostics, errors);
+                        SecondaryModules.ForEach(
+                            module,
+                            file,
+                            (secondary, moduleFile) => SearchModule(
+                                secondary, moduleFile, options, matcher, fileHits, resolutionDiagnostics, cancellationToken),
+                            errors.Add,
+                            cancellationToken);
                     }
 
                     fileHasSymbols = module.HasSymbols;
                 }
 
-                hits.Merge(fileHits);
                 succeeded++;
                 if (fileHasSymbols)
                 {
@@ -65,6 +80,7 @@ public sealed class AssemblySearcher
             }
             finally
             {
+                hits.Merge(fileHits);
                 resolutionDiagnostics.Flush();
             }
         }
@@ -80,58 +96,21 @@ public sealed class AssemblySearcher
             warnings);
     }
 
-    /// <summary>
-    /// Searches the secondary netmodules of a multi-module assembly. A missing or broken
-    /// netmodule is reported as a warning for that module only; hits already collected from
-    /// the manifest module are kept.
-    /// </summary>
-    private static void SearchSecondaryModules(
-        ModuleDefinition manifestModule,
-        string file,
-        SearchOptions options,
-        SearchMatcher matcher,
-        SearchHitCollector hits,
-        ResolutionDiagnostics resolutionDiagnostics,
-        List<ScanError> errors)
-    {
-        ModuleDefinition[] secondaryModules;
-        try
-        {
-            secondaryModules = manifestModule.Assembly.Modules.Where(candidate => candidate != manifestModule).ToArray();
-        }
-        catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
-        {
-            errors.Add(new ScanError(file, $"secondary netmoduleを読み込めません: {ex.Message}"));
-            return;
-        }
-
-        foreach (var secondaryModule in secondaryModules)
-        {
-            var moduleFile = secondaryModule.FileName ?? file;
-            try
-            {
-                SearchModule(secondaryModule, moduleFile, options, matcher, hits, resolutionDiagnostics);
-            }
-            catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
-            {
-                errors.Add(new ScanError(moduleFile, ex.Message));
-            }
-        }
-    }
-
     private static void SearchModule(
         ModuleDefinition module,
         string file,
         SearchOptions options,
         SearchMatcher matcher,
         SearchHitCollector hits,
-        ResolutionDiagnostics resolutionDiagnostics)
+        ResolutionDiagnostics resolutionDiagnostics,
+        CancellationToken cancellationToken)
     {
         var assemblyName = module.Assembly?.Name.FullName ?? module.Name;
         var seenNamespaces = new HashSet<string>(StringComparer.Ordinal);
         var scratch = new ReferenceScratch(file, options, resolutionDiagnostics);
         foreach (var type in AllTypes(module.Types))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (options.Scope is SearchScope.Definitions or SearchScope.All)
             {
                 SearchDefinitions(type, file, assemblyName, options, matcher, hits, seenNamespaces);
@@ -324,6 +303,9 @@ public sealed class AssemblySearcher
                         break;
                 }
             }
+
+            // Nothing after this point needs this method's body or sequence points again.
+            method.ReleaseBody();
         }
     }
 
@@ -725,7 +707,11 @@ public sealed class AssemblySearcher
             getLocation?.Invoke(),
             ilOffset));
 
-    private static SymbolMode EffectiveSymbolMode(SearchOptions options)
+    /// <summary>
+    /// Symbols are skipped for definition-only searches of namespaces, types and fields, whose
+    /// definitions have no sequence points; the report says "symbols not read" in that case.
+    /// </summary>
+    internal static SymbolMode EffectiveSymbolMode(SearchOptions options)
     {
         if (options.SymbolMode != SymbolMode.Auto || options.Scope != SearchScope.Definitions)
         {

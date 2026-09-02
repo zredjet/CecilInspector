@@ -54,7 +54,8 @@ public sealed class TextReportTests
         TextReport.WriteSearch(writer, result, options);
 
         var lines = writer.ToString().Split(Environment.NewLine);
-        Assert.Contains("Query: Save", lines);
+        Assert.DoesNotContain(lines, line => line.StartsWith("Query:", StringComparison.Ordinal));
+        Assert.Contains("Matches: 4", lines);
         Assert.Contains(
             "a.cs(12,5): info CI0002: [reference/method] T::Save() : System.Void (in T::Caller() : System.Void) @ IL_001A",
             lines);
@@ -82,6 +83,22 @@ public sealed class TextReportTests
         Assert.Single(lines, line => line.StartsWith("a.cs(", StringComparison.Ordinal));
         Assert.DoesNotContain(lines, line => line.StartsWith("evil.cs(", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("Bad\\nevil.cs(1,1)", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(SearchKinds.Type, SearchScope.Definitions, SymbolMode.Auto, "symbols not read")]
+    [InlineData(SearchKinds.Method, SearchScope.Definitions, SymbolMode.Off, "symbols not read")]
+    [InlineData(SearchKinds.Method, SearchScope.Definitions, SymbolMode.Auto, "1 with symbols")]
+    [InlineData(SearchKinds.Type, SearchScope.References, SymbolMode.Auto, "1 with symbols")]
+    public void SummarySaysWhenSymbolsWereNotRead(SearchKinds kinds, SearchScope scope, SymbolMode symbols, string expected)
+    {
+        var options = new SearchOptions("in.dll", "x", kinds, scope, MatchMode.Contains, true, true, symbols, 10, null, []);
+        var result = new SearchResult([], 0, [], [], 1, 1, 1, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        Assert.Contains($"Assemblies: 1/1 succeeded, {expected}, 0 errors", writer.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]

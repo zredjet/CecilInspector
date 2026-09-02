@@ -8,11 +8,21 @@ public static class TextReport
     public static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options)
     {
         writer = new GuardedTextWriter(writer);
-        writer.WriteLine($"Query: {TextSanitizer.Escape(options.Query)}");
+        var msBuild = options.Format == ReportFormat.MsBuild;
+        if (!msBuild)
+        {
+            // In msbuild format the query is the one header value under the user's control, and a
+            // query shaped like "x(1,1): error X: y" would be picked up by problem matchers.
+            writer.WriteLine($"Query: {TextSanitizer.Escape(options.Query)}");
+        }
+
         writer.WriteLine($"Kinds: {options.Kinds} / Scope: {options.Scope} / Match: {options.MatchMode}" +
                          (options.IgnoreCase ? " (ignore case)" : " (case sensitive)"));
+        var symbols = AssemblySearcher.EffectiveSymbolMode(options) == SymbolMode.Off
+            ? "symbols not read"
+            : $"{result.FilesWithSymbols} with symbols";
         writer.WriteLine($"Assemblies: {result.FilesSucceeded}/{result.FilesDiscovered} succeeded, " +
-                         $"{result.FilesWithSymbols} with symbols, {result.Errors.Count} errors");
+                         $"{symbols}, {result.Errors.Count} errors");
         writer.WriteLine($"Matches: {result.TotalMatches}");
         if (result.TotalMatches > 0)
         {
@@ -26,7 +36,7 @@ public static class TextReport
 
         foreach (var hit in result.Hits)
         {
-            if (options.Format == ReportFormat.MsBuild)
+            if (msBuild)
             {
                 WriteMsBuildHit(writer, hit);
             }

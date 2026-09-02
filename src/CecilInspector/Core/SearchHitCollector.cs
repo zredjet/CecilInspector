@@ -14,6 +14,9 @@ internal sealed class SearchHitCollector
 
     public int TotalMatches { get; private set; }
 
+    /// <summary>How many more hits this collector would still retain; zero once the limit is reached.</summary>
+    public int RemainingCapacity => Math.Max(0, _retentionLimit - _hits.Count);
+
     public void Add(HitScope scope, HitKind kind, Func<SearchHit> createHit)
     {
         TotalMatches = checked(TotalMatches + 1);
