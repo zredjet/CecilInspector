@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Resolve version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ARTIFACT=cecil-inspector-$VERSION-win-x64" >> "$GITHUB_ENV"
+      - run: dotnet restore CecilInspector.slnx
+      - run: dotnet build CecilInspector.slnx -c Release --no-restore -p:Version=${{ env.VERSION }}
+      - run: dotnet test CecilInspector.slnx -c Release --no-build
+      - name: Publish self-contained single-file win-x64
+        run: >
+          dotnet publish src/CecilInspector -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:DebugType=none -p:Version=${{ env.VERSION }}
+          -o publish/${{ env.ARTIFACT }}
+      - name: Create ZIP
+        shell: bash
+        run: |
+          cp LICENSE README.md "publish/$ARTIFACT/"
+          mkdir -p dist
+          (cd publish && 7z a -tzip "../dist/$ARTIFACT.zip" "$ARTIFACT" > /dev/null)
+          ls -l dist
+      - name: Smoke test the published binary
+        shell: bash
+        run: |
+          "publish/$ARTIFACT/cecil-inspector.exe" --version
+          "publish/$ARTIFACT/cecil-inspector.exe" search "publish/$ARTIFACT/cecil-inspector.exe" Search --kind type --symbols off | head -5
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: dist/*.zip
+      - name: Attach ZIP to the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "cecil-inspector $VERSION" --generate-notes dist/*.zip \
+            || gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber

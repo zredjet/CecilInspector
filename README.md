@@ -39,6 +39,8 @@ dotnet publish src/CecilInspector -c Release -r win-x64 --self-contained true \
   -p:PublishSingleFile=true
 ```
 
+`v1.2.3`形式のタグをpushすると、GitHub Actionsの`Release`ワークフローがWindows x64向けの自己完結・単一ファイル版を発行し、`cecil-inspector-1.2.3-win-x64.zip`（実行ファイル、LICENSE、README入り）をGitHub Releaseに添付します。バージョン番号はタグから取り、`--version`の表示と一致します。
+
 ## 検索
 
 ```text
