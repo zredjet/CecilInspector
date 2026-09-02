@@ -34,7 +34,10 @@ internal static class FrameworkProbe
                 continue;
             }
 
-            foreach (var tfm in SafeDirectories(reference).OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase))
+            // Target framework folders sort by version, not by name: "net10.0" must precede "net9.0".
+            foreach (var tfm in SafeDirectories(reference)
+                         .OrderByDescending(path => ParseVersion(Path.GetFileName(path).TrimStart("net".ToCharArray())))
+                         .ThenByDescending(path => path, StringComparer.OrdinalIgnoreCase))
             {
                 yield return tfm;
             }

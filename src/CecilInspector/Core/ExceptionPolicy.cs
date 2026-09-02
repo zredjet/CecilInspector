@@ -8,9 +8,10 @@ using Mono.Cecil.Cil;
 internal static class ExceptionPolicy
 {
     private static readonly System.Reflection.Assembly CecilAssembly = typeof(ModuleDefinition).Assembly;
+    private static readonly string CecilAssemblyName = CecilAssembly.GetName().Name ?? "Mono.Cecil";
 
     public static bool IsFatal(Exception exception) => exception is
-        OutOfMemoryException or StackOverflowException or AccessViolationException or AppDomainUnloadedException;
+        OutOfMemoryException or AccessViolationException or AppDomainUnloadedException;
 
     /// <summary>
     /// True for failures that should be recorded as a warning for the current file and let the
@@ -18,7 +19,7 @@ internal static class ExceptionPolicy
     /// </summary>
     public static bool IsRecoverableAssemblyError(Exception exception)
     {
-        if (exception is SearchQueryException or ReportWriteException)
+        if (exception is SearchQueryException or ReportWriteException or OperationCanceledException)
         {
             return false;
         }
@@ -40,7 +41,14 @@ internal static class ExceptionPolicy
                PassedThroughCecil(exception);
     }
 
+    /// <summary>
+    /// The throwing method (Source / TargetSite) is checked first: it is cheap and survives the
+    /// ReadyToRun and single-file builds, where inlining can thin out the captured frames that
+    /// the full stack walk relies on.
+    /// </summary>
     private static bool PassedThroughCecil(Exception exception) =>
+        string.Equals(exception.Source, CecilAssemblyName, StringComparison.Ordinal) ||
+        exception.TargetSite?.DeclaringType?.Assembly == CecilAssembly ||
         new StackTrace(exception).GetFrames().Any(frame =>
             frame.GetMethod()?.DeclaringType?.Assembly == CecilAssembly);
 }

@@ -53,11 +53,13 @@ public sealed class AssemblySearcherTests
     }
 
     [Fact]
-    public void InvalidRegexIsReportedAsArgumentError()
+    public void InvalidRegexIsReportedAsQueryError()
     {
         var options = Options("[", SearchKinds.All, SearchScope.Definitions, MatchMode.Regex);
 
-        Assert.Throws<ArgumentException>(() => new AssemblySearcher().Search(options));
+        // SearchQueryException is an ArgumentException that Program maps to exit code 1, the
+        // same as the CLI's own validation of the pattern.
+        Assert.Throws<SearchQueryException>(() => new AssemblySearcher().Search(options));
     }
 
     [Fact]

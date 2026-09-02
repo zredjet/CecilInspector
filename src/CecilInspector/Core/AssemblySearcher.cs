@@ -31,11 +31,13 @@ public sealed class AssemblySearcher
         var succeeded = 0;
         var withSymbols = 0;
         var symbolMode = EffectiveSymbolMode(options);
+        using var frameworkResolver = CecilResolverFactory.CreateFrameworkResolver();
 
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var resolver = CecilResolverFactory.Create(file, referenceDirectories, discovery.SearchDirectories);
+            using var resolver = CecilResolverFactory.Create(
+                file, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
 
             // Hits are staged per file and merged whether or not the file completes: a failure
             // part-way through still reports what was found before it (the file is listed as an
@@ -143,7 +145,13 @@ public sealed class AssemblySearcher
         // The declaring type renders identically for every member, so format it once per type.
         var declaringType = CecilFormatting.Type(type);
 
-        if (options.Kinds.Includes(HitKind.Type) && matcher.IsMatch(type.Name, type.FullName, declaringType))
+        if (options.Kinds.Includes(HitKind.Type) &&
+            matcher.IsMatch(
+                type.Name,
+                type.FullName,
+                declaringType,
+                CecilFormatting.WithoutArity(type.Name),
+                CecilFormatting.WithoutArity(declaringType)))
         {
             Add(hits, file, assemblyName, HitScope.Definition, HitKind.Type, declaringType, null, null, null);
         }
@@ -245,36 +253,41 @@ public sealed class AssemblySearcher
             string? container = null;
             string GetContainer() => container ??= CecilFormatting.Method(DebugLocations.DisplayMethod(method));
             SequencePointMapper? locations = null;
-            foreach (var instruction in method.Body.Instructions)
+            Func<SourceLocation?> LocationOf(Instruction instruction)
+            {
+                SourceLocation? location = null;
+                var resolved = false;
+                return () =>
+                {
+                    if (!resolved)
+                    {
+                        locations ??= DebugLocations.CreateMapper(method);
+                        location = locations.ForInstruction(instruction);
+                        resolved = true;
+                    }
+
+                    return location;
+                };
+            }
+
+            var body = method.Body;
+            foreach (var instruction in body.Instructions)
             {
                 if (instruction.Operand is not (MethodReference or FieldReference or TypeReference or Mono.Cecil.CallSite))
                 {
                     continue;
                 }
 
-                SourceLocation? location = null;
-                var locationResolved = false;
-                SourceLocation? GetLocation()
-                {
-                    if (!locationResolved)
-                    {
-                        locations ??= DebugLocations.CreateMapper(method);
-                        location = locations.ForInstruction(instruction);
-                        locationResolved = true;
-                    }
-
-                    return location;
-                }
-
+                var getLocation = LocationOf(instruction);
                 switch (instruction.Operand)
                 {
                     case MethodReference target:
                         SearchMethodReference(target, instruction, file, assemblyName,
-                            GetContainer, GetLocation, options, matcher, hits, scratch);
+                            GetContainer, getLocation, options, matcher, hits, scratch);
                         break;
                     case FieldReference target:
                         SearchFieldReference(target, instruction, file, assemblyName,
-                            GetContainer, GetLocation, options, matcher, hits, scratch);
+                            GetContainer, getLocation, options, matcher, hits, scratch);
                         break;
                     case TypeReference target:
                         if (searchTypes)
@@ -282,7 +295,7 @@ public sealed class AssemblySearcher
                             scratch.Roots.Clear();
                             scratch.Roots.Add(target);
                             SearchTypeReferences(instruction, file, assemblyName,
-                                GetContainer, GetLocation, options, matcher, hits, scratch);
+                                GetContainer, getLocation, options, matcher, hits, scratch);
                         }
 
                         break;
@@ -297,10 +310,44 @@ public sealed class AssemblySearcher
                             }
 
                             SearchTypeReferences(instruction, file, assemblyName,
-                                GetContainer, GetLocation, options, matcher, hits, scratch);
+                                GetContainer, getLocation, options, matcher, hits, scratch);
                         }
 
                         break;
+                }
+            }
+
+            if (searchTypes)
+            {
+                // Types that appear only in the exception-handler table or in the locals
+                // signature are not operands of any instruction: "catch (MyException)" with a
+                // handler that ignores the object, or a local that is only assigned. They are
+                // reported at the handler's first instruction and at the method's first
+                // instruction respectively.
+                foreach (var handler in body.ExceptionHandlers)
+                {
+                    if (handler.CatchType is null || handler.HandlerStart is null)
+                    {
+                        continue;
+                    }
+
+                    scratch.Roots.Clear();
+                    scratch.Roots.Add(handler.CatchType);
+                    SearchTypeReferences(handler.HandlerStart, file, assemblyName,
+                        GetContainer, LocationOf(handler.HandlerStart), options, matcher, hits, scratch);
+                }
+
+                if (body.HasVariables && body.Instructions.Count > 0)
+                {
+                    scratch.Roots.Clear();
+                    foreach (var variable in body.Variables)
+                    {
+                        scratch.Roots.Add(variable.VariableType);
+                    }
+
+                    var first = body.Instructions[0];
+                    SearchTypeReferences(first, file, assemblyName,
+                        GetContainer, LocationOf(first), options, matcher, hits, scratch);
                 }
             }
 
@@ -447,7 +494,13 @@ public sealed class AssemblySearcher
             var symbol = scratch.Collisions.Contains(unscoped) ? identity : unscoped;
             if (searchTypes &&
                 scratch.SeenTypes.Add(identity) &&
-                matcher.IsMatch(target.Name, target.FullName, unscoped, symbol))
+                matcher.IsMatch(
+                    target.Name,
+                    target.FullName,
+                    unscoped,
+                    symbol,
+                    CecilFormatting.WithoutArity(target.Name),
+                    CecilFormatting.WithoutArity(unscoped)))
             {
                 Add(hits, file, assemblyName, HitScope.Reference, HitKind.Type,
                     symbol, getContainer, getLocation, instruction.Offset);
@@ -517,6 +570,13 @@ public sealed class AssemblySearcher
         string file,
         ResolutionDiagnostics diagnostics)
     {
+        if (method.DeclaringType.IsArray)
+        {
+            // Get/Set/Address/.ctor on an array type are pseudo-methods the runtime synthesizes;
+            // there is no definition to resolve, so their dependency is not missing.
+            return UnresolvedCandidates(method, options);
+        }
+
         try
         {
             var definition = method.Resolve();
@@ -574,7 +634,9 @@ public sealed class AssemblySearcher
         var candidates = new List<MemberCandidate>(2);
         if (options.Kinds.Includes(HitKind.Method))
         {
-            candidates.Add(MethodCandidate(method, method.Name));
+            // A dotted name is an explicit interface implementation; matching its trailing
+            // member name keeps the answer the same whether or not the dependency resolved.
+            candidates.Add(MethodCandidate(method, CecilFormatting.ExplicitMemberName(method.Name)));
         }
 
         if (options.Kinds.Includes(HitKind.Property) && CecilFormatting.IsPropertyAccessorName(method.Name))
@@ -858,7 +920,10 @@ public sealed class AssemblySearcher
                 _failures.Add(key, failure);
             }
 
-            failure.Members.Add(method.FullName);
+            // Distinct references are counted by metadata token rather than by retaining every
+            // full signature; a large assembly with no framework on disk has hundreds of
+            // thousands of them.
+            failure.MemberTokens.Add(method.MetadataToken.ToUInt32());
         }
 
         /// <summary>Emits the aggregated warnings collected so far; call once per analyzed file.</summary>
@@ -866,7 +931,7 @@ public sealed class AssemblySearcher
         {
             foreach (var failure in _failures.Values.OrderBy(item => item.Dependency, StringComparer.Ordinal))
             {
-                var count = failure.Members.Count;
+                var count = failure.MemberTokens.Count;
                 var members = count == 1
                     ? $"メンバー '{failure.FirstMember}'"
                     : $"メンバー {count} 件（例: '{failure.FirstMember}'）";
@@ -881,7 +946,7 @@ public sealed class AssemblySearcher
 
         private sealed record DependencyFailure(string File, string Dependency, string FirstMember, string? Reason)
         {
-            public HashSet<string> Members { get; } = new(StringComparer.Ordinal);
+            public HashSet<uint> MemberTokens { get; } = [];
         }
     }
 }

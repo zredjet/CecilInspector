@@ -183,6 +183,75 @@ public sealed class ResolverIntegrationTests
     }
 
     [Fact]
+    public void UnresolvableRaiseAccessorYieldsEventWithoutAType()
+    {
+        using var temp = new TempDirectory();
+        var caller = Path.Combine(temp.Path, "Caller.dll");
+        CreateCallerAssembly(caller, "raise_Changed", handlerParameter: true);
+
+        var result = Search(caller, "Changed", SearchKinds.Event);
+
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal("Fixtures.Model::Changed", hit.Symbol);
+    }
+
+    [Fact]
+    public void UnresolvableExplicitInterfaceImplementationMatchesItsMemberName()
+    {
+        using var temp = new TempDirectory();
+        var caller = Path.Combine(temp.Path, "Caller.dll");
+        CreateCallerAssembly(caller, "System.IDisposable.Dispose");
+
+        var simple = Search(caller, "Dispose", SearchKinds.Method);
+        var qualified = Search(caller, "Fixtures.Model::Dispose", SearchKinds.Method);
+        var metadata = Search(caller, "System.IDisposable.Dispose", SearchKinds.Method);
+
+        Assert.Single(simple.Hits);
+        Assert.Single(qualified.Hits);
+        Assert.Single(metadata.Hits);
+    }
+
+    [Theory]
+    [InlineData(0.30)]
+    [InlineData(0.60)]
+    [InlineData(0.90)]
+    public void CorruptCandidateNextToTargetIsSkippedInFavourOfReferencePath(double keepRatio)
+    {
+        using var temp = new TempDirectory();
+        var app = temp.CreateSubdirectory("app");
+        var reference = temp.CreateSubdirectory("reference");
+        CreateModelAssembly(Path.Combine(reference, "Model.dll"), "FetchValue", "Logical");
+        var good = File.ReadAllBytes(Path.Combine(reference, "Model.dll"));
+        File.WriteAllBytes(Path.Combine(app, "Model.dll"), good[..(int)(good.Length * keepRatio)]);
+        var caller = Path.Combine(app, "Caller.dll");
+        CreateCallerAssembly(caller, "FetchValue");
+        var options = new SearchOptions(
+            caller, "Logical", SearchKinds.Property, SearchScope.References, MatchMode.Exact,
+            true, true, SymbolMode.Off, 100, null, [reference]);
+
+        var result = new AssemblySearcher().Search(options);
+
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(HitKind.Property, hit.Kind);
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public void ArrayPseudoMethodsAreNotReportedAsUnresolvedDependencies()
+    {
+        using var temp = new TempDirectory();
+        var caller = Path.Combine(temp.Path, "Caller.dll");
+        CreateArrayCallerAssembly(caller);
+
+        var result = Search(caller, "Get", SearchKinds.Method);
+
+        Assert.Empty(result.Errors);
+        var hit = Assert.Single(result.Hits);
+        Assert.StartsWith("System.Int32[", hit.Symbol, StringComparison.Ordinal);
+        Assert.Contains("]::Get(System.Int32, System.Int32) : System.Int32", hit.Symbol, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UnresolvedMembersAreAggregatedPerDependency()
     {
         using var temp = new TempDirectory();
@@ -239,6 +308,29 @@ public sealed class ResolverIntegrationTests
         MatchMode match = MatchMode.Exact) =>
         new AssemblySearcher().Search(new SearchOptions(
             input, query, kinds, SearchScope.References, match, true, true, SymbolMode.Off, 100, null, []));
+
+    /// <summary>A caller of the multi-dimensional array pseudo-method int[,]::Get(int, int).</summary>
+    private static void CreateArrayCallerAssembly(string path)
+    {
+        using var assembly = AssemblyDefinition.CreateAssembly(
+            new AssemblyNameDefinition("Caller", new Version(1, 0, 0, 0)), "Caller", ModuleKind.Dll);
+        var module = assembly.MainModule;
+        var matrix = new ArrayType(module.TypeSystem.Int32, 2);
+        var get = new MethodReference("Get", module.TypeSystem.Int32, matrix) { HasThis = true };
+        get.Parameters.Add(new ParameterDefinition(module.TypeSystem.Int32));
+        get.Parameters.Add(new ParameterDefinition(module.TypeSystem.Int32));
+
+        var type = new TypeDefinition("Fixtures", "Caller", TypeAttributes.Public | TypeAttributes.Class);
+        module.Types.Add(type);
+        var method = new MethodDefinition("Call", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.Int32);
+        method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+        method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldc_I4_0));
+        method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldc_I4_0));
+        method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, get));
+        method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+        type.Methods.Add(method);
+        assembly.Write(path);
+    }
 
     private static void CreateModelAssembly(
         string path,

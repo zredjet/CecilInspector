@@ -18,11 +18,13 @@ public sealed class MetadataDumper
         var errors = new List<ScanError>(discovery.Errors);
         var warnings = new List<ScanError>();
         var succeeded = 0;
+        using var frameworkResolver = CecilResolverFactory.CreateFrameworkResolver();
 
         foreach (var file in discovery.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var resolver = CecilResolverFactory.Create(file, referenceDirectories, discovery.SearchDirectories);
+            using var resolver = CecilResolverFactory.Create(
+                file, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
             try
             {
                 using var module = CecilModuleReader.Read(file, options.SymbolMode, resolver, out var symbolWarning);

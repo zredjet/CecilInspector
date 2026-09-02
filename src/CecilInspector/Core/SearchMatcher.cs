@@ -19,7 +19,9 @@ internal sealed class SearchMatcher
             }
             catch (ArgumentException ex)
             {
-                throw new ArgumentException($"正規表現が不正です: {ex.Message}", ex);
+                // The same exit code (1) whether the pattern is rejected by the CLI up front or
+                // by a library caller that skipped that validation.
+                throw new SearchQueryException($"正規表現が不正です: {ex.Message}", ex);
             }
         }
     }

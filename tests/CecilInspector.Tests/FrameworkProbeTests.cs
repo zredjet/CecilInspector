@@ -15,11 +15,13 @@ public sealed class FrameworkProbeTests
         var preview = temp.CreateSubdirectory(Path.Combine("shared", "Microsoft.NETCore.App", "10.0.3-preview.1"));
         var ref8 = temp.CreateSubdirectory(Path.Combine("packs", "Microsoft.NETCore.App.Ref", "8.0.11", "ref", "net8.0"));
         var ref10 = temp.CreateSubdirectory(Path.Combine("packs", "Microsoft.NETCore.App.Ref", "10.0.2", "ref", "net10.0"));
+        var ref10Legacy = temp.CreateSubdirectory(Path.Combine("packs", "Microsoft.NETCore.App.Ref", "10.0.2", "ref", "net9.0"));
         temp.CreateSubdirectory(Path.Combine("packs", "Microsoft.NETCore.App.Ref", "9.0.0"));
 
         var directories = FrameworkProbe.DotnetRootDirectories(temp.Path).ToArray();
 
-        Assert.Equal([preview, shared10, shared8, ref10, ref8], directories);
+        // Target framework folders sort by version ("net10.0" before "net9.0"), not by name.
+        Assert.Equal([preview, shared10, shared8, ref10, ref10Legacy, ref8], directories);
     }
 
     [Fact]
@@ -70,7 +72,7 @@ public sealed class FrameworkProbeTests
         WriteAssembly(rightVersion, new Version(2, 0, 0, 0));
         using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [], [gacRoot]);
 
-        using var resolved = resolver.Resolve(new AssemblyNameReference("Model", new Version(2, 0, 0, 0)));
+        var resolved = resolver.Resolve(new AssemblyNameReference("Model", new Version(2, 0, 0, 0)));
 
         Assert.Equal(new Version(2, 0, 0, 0), resolved.Name.Version);
         Assert.Equal(rightVersion, resolved.MainModule.FileName);
@@ -86,9 +88,47 @@ public sealed class FrameworkProbeTests
         WriteAssembly(Path.Combine(framework, "Model.dll"), new Version(5, 0, 0, 0));
         using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [framework], []);
 
-        Assert.Equal([temp.Path, framework], resolver.GetSearchDirectories());
-        using var resolved = resolver.Resolve(new AssemblyNameReference("Model", new Version(5, 0, 0, 0)));
+        Assert.Equal([temp.Path], resolver.GetSearchDirectories());
+        Assert.Equal([temp.Path, framework], resolver.AllSearchDirectories);
+        var resolved = resolver.Resolve(new AssemblyNameReference("Model", new Version(5, 0, 0, 0)));
         Assert.Equal(Path.Combine(framework, "Model.dll"), resolved.MainModule.FileName);
+    }
+
+    [Fact]
+    public void SharedFrameworkResolverOpensEachAssemblyOnceAcrossFiles()
+    {
+        using var temp = new TempDirectory();
+        var framework = temp.CreateSubdirectory("framework");
+        WriteAssembly(Path.Combine(framework, "Model.dll"), new Version(5, 0, 0, 0));
+        var name = new AssemblyNameReference("Model", new Version(5, 0, 0, 0));
+        using var shared = CecilResolverFactory.CreateFrameworkResolver([framework], []);
+
+        AssemblyDefinition first;
+        using (var firstFile = CecilResolverFactory.Create(temp.File("First.dll"), [], [temp.Path], shared))
+        {
+            first = firstFile.Resolve(name);
+        }
+
+        var probesAfterFirst = shared.ProbeCount;
+        using var secondFile = CecilResolverFactory.Create(temp.File("Second.dll"), [], [temp.Path], shared);
+        var second = secondFile.Resolve(name);
+
+        // The per-file resolver that resolved it first has been disposed; the shared resolver
+        // owns the assembly, so it is the same instance and still readable.
+        Assert.Same(first, second);
+        Assert.Equal(probesAfterFirst, shared.ProbeCount);
+        Assert.NotEmpty(second.MainModule.Types);
+    }
+
+    [Fact]
+    public void AssemblyNamesThatAreNotFileNamesAreNotProbed()
+    {
+        using var temp = new TempDirectory();
+        using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [], []);
+
+        Assert.Throws<AssemblyResolutionException>(() =>
+            resolver.Resolve(new AssemblyNameReference(Path.Combine("..", "Model"), new Version(1, 0, 0, 0))));
+        Assert.Equal(0, resolver.ProbeCount);
     }
 
     [Fact]
@@ -113,7 +153,7 @@ public sealed class FrameworkProbeTests
 
         using (var asFramework = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [framework], []))
         {
-            using var resolved = asFramework.Resolve(older);
+            var resolved = asFramework.Resolve(older);
             Assert.Equal(new Version(5, 0, 0, 0), resolved.Name.Version);
             Assert.Throws<AssemblyResolutionException>(() => asFramework.Resolve(newer));
         }
@@ -121,7 +161,7 @@ public sealed class FrameworkProbeTests
         using (var asInput = CecilResolverFactory.Create(temp.File("Target.dll"), [framework], [temp.Path], [], []))
         {
             Assert.Throws<AssemblyResolutionException>(() => asInput.Resolve(older));
-            using var exact = asInput.Resolve(new AssemblyNameReference("Model", new Version(5, 0, 0, 0)));
+            var exact = asInput.Resolve(new AssemblyNameReference("Model", new Version(5, 0, 0, 0)));
             Assert.Equal(new Version(5, 0, 0, 0), exact.Name.Version);
         }
     }
@@ -136,7 +176,7 @@ public sealed class FrameworkProbeTests
             PublicKeyToken = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a],
         };
 
-        using var resolved = resolver.Resolve(request);
+        var resolved = resolver.Resolve(request);
 
         Assert.Equal("System.Runtime", resolved.Name.Name);
         Assert.True(resolved.Name.Version >= request.Version);

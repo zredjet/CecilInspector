@@ -26,51 +26,83 @@ internal static class CecilResolverFactory
     }
 
     /// <summary>
-    /// Probe order: the target's own folder, then --reference-path in the given order, then every
-    /// folder of the input that contains assemblies, then the framework locations found by
-    /// <see cref="FrameworkProbe"/> (installed .NET runtimes and reference packs, .NET Framework
-    /// directories), and finally the GAC on Windows. Cecil's implicit relative "." and "bin"
-    /// entries are deliberately dropped so resolution never depends on the current directory.
+    /// The resolver for framework locations (installed runtimes and reference packs, .NET
+    /// Framework directories, the running process's trusted platform assemblies, the GAC).
+    /// Its results do not depend on which file is being analyzed, so one instance serves a
+    /// whole run and each framework assembly is opened once instead of once per input file.
+    /// </summary>
+    public static IdentityAwareAssemblyResolver CreateFrameworkResolver() =>
+        CreateFrameworkResolver(FrameworkProbe.Directories, FrameworkProbe.GacRoots);
+
+    public static IdentityAwareAssemblyResolver CreateFrameworkResolver(
+        IReadOnlyList<string> frameworkDirectories,
+        IReadOnlyList<string> gacRoots)
+    {
+        var resolver = new IdentityAwareAssemblyResolver(
+            IdentityPolicy.Framework, gacRoots, fallback: null, ownsFallback: false, TraceRequested());
+        AddDirectories(resolver, frameworkDirectories);
+        return resolver;
+    }
+
+    /// <summary>
+    /// The resolver for one analyzed file. Probe order: the target's own folder, then
+    /// --reference-path in the given order, then every folder of the input that contains
+    /// assemblies (all requiring the exact identity), and finally
+    /// <paramref name="frameworkResolver"/>. Cecil's implicit relative "." and "bin" entries
+    /// are deliberately dropped so resolution never depends on the current directory.
     /// </summary>
     public static IdentityAwareAssemblyResolver Create(
         string targetFile,
         IReadOnlyList<string> referenceDirectories,
-        IReadOnlyList<string> discoveredDirectories) =>
-        Create(targetFile, referenceDirectories, discoveredDirectories, FrameworkProbe.Directories, FrameworkProbe.GacRoots);
+        IReadOnlyList<string> discoveredDirectories,
+        IdentityAwareAssemblyResolver frameworkResolver) =>
+        Create(targetFile, referenceDirectories, discoveredDirectories, frameworkResolver, ownsFallback: false);
 
+    /// <summary>Convenience for tests and single-file callers: owns a framework resolver built from the default probe.</summary>
+    public static IdentityAwareAssemblyResolver Create(
+        string targetFile,
+        IReadOnlyList<string> referenceDirectories,
+        IReadOnlyList<string> discoveredDirectories) =>
+        Create(targetFile, referenceDirectories, discoveredDirectories, CreateFrameworkResolver(), ownsFallback: true);
+
+    /// <summary>Convenience for tests: owns a framework resolver over the given locations.</summary>
     public static IdentityAwareAssemblyResolver Create(
         string targetFile,
         IReadOnlyList<string> referenceDirectories,
         IReadOnlyList<string> discoveredDirectories,
         IReadOnlyList<string> frameworkDirectories,
-        IReadOnlyList<string> gacRoots)
+        IReadOnlyList<string> gacRoots) =>
+        Create(
+            targetFile,
+            referenceDirectories,
+            discoveredDirectories,
+            CreateFrameworkResolver(frameworkDirectories, gacRoots),
+            ownsFallback: true);
+
+    private static IdentityAwareAssemblyResolver Create(
+        string targetFile,
+        IReadOnlyList<string> referenceDirectories,
+        IReadOnlyList<string> discoveredDirectories,
+        IdentityAwareAssemblyResolver frameworkResolver,
+        bool ownsFallback)
     {
-        var resolver = new IdentityAwareAssemblyResolver(frameworkDirectories, gacRoots);
+        var resolver = new IdentityAwareAssemblyResolver(
+            IdentityPolicy.Exact, [], frameworkResolver, ownsFallback, TraceRequested());
+        AddDirectories(
+            resolver,
+            [Path.GetDirectoryName(Path.GetFullPath(targetFile))!, .. referenceDirectories, .. discoveredDirectories]);
+        return resolver;
+    }
+
+    private static void AddDirectories(IdentityAwareAssemblyResolver resolver, IEnumerable<string> directories)
+    {
         foreach (var directory in resolver.GetSearchDirectories())
         {
             resolver.RemoveSearchDirectory(directory);
         }
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        Add(Path.GetDirectoryName(Path.GetFullPath(targetFile))!);
-        foreach (var directory in referenceDirectories)
-        {
-            Add(directory);
-        }
-
-        foreach (var directory in discoveredDirectories)
-        {
-            Add(directory);
-        }
-
-        foreach (var directory in frameworkDirectories)
-        {
-            Add(directory);
-        }
-
-        return resolver;
-
-        void Add(string directory)
+        foreach (var directory in directories)
         {
             if (seen.Add(directory))
             {
@@ -78,59 +110,148 @@ internal static class CecilResolverFactory
             }
         }
     }
+
+    private static bool TraceRequested() => Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
+}
+
+/// <summary>Which candidates a resolver accepts for a requested assembly identity.</summary>
+internal enum IdentityPolicy
+{
+    /// <summary>The full AssemblyIdentity must match (name, version, culture, public key token).</summary>
+    Exact,
+
+    /// <summary>Framework binding: same strong-name parts and the same or a newer version.</summary>
+    Framework,
 }
 
 /// <summary>
-/// Two-tier identity policy. Directories the user controls (the target's folder, --reference-path,
-/// folders of the input) must match the full AssemblyIdentity, so a stray wrong-version copy is
-/// never mistaken for the dependency. Framework locations (installed runtimes and reference
-/// packs, .NET Framework folders, the GAC, and the running process's trusted platform
-/// assemblies) accept the same or a newer version of the same strong name, which is how the
-/// runtime itself binds framework references. Identities that fail are remembered so a missing
-/// dependency is probed once per resolver rather than once per referencing instruction.
+/// Two-tier identity resolution. A resolver over directories the user controls (the target's
+/// folder, --reference-path, folders of the input) requires the full AssemblyIdentity, so a
+/// stray wrong-version copy is never mistaken for the dependency, and falls back to a shared
+/// resolver over framework locations, which accepts the same or a newer version of the same
+/// strong name the way the runtime itself binds framework references. Each resolver caches
+/// what it resolved and owns those assemblies; identities that fail are remembered so a
+/// missing dependency is probed once rather than once per referencing instruction.
 /// </summary>
 internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
 {
-    private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
-
-    private readonly HashSet<string> _frameworkDirectories;
+    private readonly IdentityPolicy _policy;
     private readonly IReadOnlyList<string> _gacRoots;
+    private readonly IdentityAwareAssemblyResolver? _fallback;
+    private readonly bool _ownsFallback;
+    private readonly bool _trace;
+    private readonly Dictionary<string, AssemblyDefinition> _cache = new(StringComparer.Ordinal);
     private readonly HashSet<string> _unresolvable = new(StringComparer.Ordinal);
+    private int _probeCount;
 
-    public IdentityAwareAssemblyResolver()
-        : this([], [])
+    internal IdentityAwareAssemblyResolver(
+        IdentityPolicy policy,
+        IReadOnlyList<string> gacRoots,
+        IdentityAwareAssemblyResolver? fallback,
+        bool ownsFallback,
+        bool trace)
     {
-    }
-
-    public IdentityAwareAssemblyResolver(IReadOnlyList<string> frameworkDirectories, IReadOnlyList<string> gacRoots)
-    {
-        _frameworkDirectories = new HashSet<string>(
-            frameworkDirectories.Select(Path.TrimEndingDirectorySeparator),
-            StringComparer.OrdinalIgnoreCase);
+        _policy = policy;
         _gacRoots = gacRoots;
+        _fallback = fallback;
+        _ownsFallback = ownsFallback;
+        _trace = trace;
     }
 
-    /// <summary>Number of file probes performed; exposed for tests.</summary>
-    internal int ProbeCount { get; private set; }
+    /// <summary>Number of file probes performed, including the fallback's; exposed for tests.</summary>
+    internal int ProbeCount => _probeCount + (_fallback?.ProbeCount ?? 0);
+
+    /// <summary>This resolver's directories followed by the fallback's, in probe order.</summary>
+    internal IReadOnlyList<string> AllSearchDirectories =>
+        [.. GetSearchDirectories(), .. _fallback?.AllSearchDirectories ?? []];
+
+    public override AssemblyDefinition Resolve(AssemblyNameReference name) =>
+        Resolve(name, new ReaderParameters { AssemblyResolver = this });
 
     public override AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters)
     {
+        if (_cache.TryGetValue(name.FullName, out var cached))
+        {
+            return cached;
+        }
+
         if (_unresolvable.Contains(name.FullName))
         {
             throw new AssemblyResolutionException(name);
         }
 
-        var resolved = SearchDirectory(name, GetSearchDirectories(), parameters) ??
-                       SearchTrustedPlatformAssemblies(name, parameters) ??
-                       SearchGac(name, parameters);
-        Trace(name, resolved);
+        var resolved = IsSafeFileName(name.Name) ? SearchOwnLocations(name, parameters) : null;
         if (resolved is not null)
         {
+            _cache.Add(name.FullName, resolved);
+            Trace(name, resolved);
             return resolved;
         }
 
+        if (_fallback is not null)
+        {
+            try
+            {
+                // Resolved through (and owned by) the fallback, which caches and traces it.
+                return _fallback.Resolve(name);
+            }
+            catch (AssemblyResolutionException)
+            {
+                // Fall through and remember the failure here too.
+            }
+        }
+
         _unresolvable.Add(name.FullName);
+        Trace(name, null);
         throw new AssemblyResolutionException(name);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            foreach (var assembly in _cache.Values)
+            {
+                assembly.Dispose();
+            }
+
+            _cache.Clear();
+            if (_ownsFallback)
+            {
+                _fallback?.Dispose();
+            }
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private AssemblyDefinition? SearchOwnLocations(AssemblyNameReference name, ReaderParameters parameters)
+    {
+        var resolved = SearchDirectories(name, parameters);
+        if (resolved is null && _policy == IdentityPolicy.Framework)
+        {
+            resolved = SearchTrustedPlatformAssemblies(name, parameters) ?? SearchGac(name, parameters);
+        }
+
+        return resolved;
+    }
+
+    private AssemblyDefinition? SearchDirectories(AssemblyNameReference name, ReaderParameters parameters)
+    {
+        var extensions = name.IsWindowsRuntime ? new[] { ".winmd", ".dll" } : new[] { ".dll", ".exe" };
+        foreach (var directory in GetSearchDirectories())
+        {
+            foreach (var extension in extensions)
+            {
+                var candidate = TryReadMatching(name, Path.Combine(directory, name.Name + extension), parameters);
+                if (candidate is not null)
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -151,8 +272,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
                 continue;
             }
 
-            ProbeCount++;
-            var candidate = TryReadMatching(name, path, parameters, IsCompatibleFrameworkIdentity);
+            var candidate = TryReadMatching(name, path, parameters);
             if (candidate is not null)
             {
                 return candidate;
@@ -171,8 +291,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
 
         foreach (var candidatePath in FrameworkProbe.GacCandidatePaths(name, _gacRoots))
         {
-            ProbeCount++;
-            var candidate = TryReadMatching(name, candidatePath, parameters, IsCompatibleFrameworkIdentity);
+            var candidate = TryReadMatching(name, candidatePath, parameters);
             if (candidate is not null)
             {
                 return candidate;
@@ -182,9 +301,9 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         return null;
     }
 
-    private static void Trace(AssemblyNameReference name, AssemblyDefinition? resolved)
+    private void Trace(AssemblyNameReference name, AssemblyDefinition? resolved)
     {
-        if (TraceEnabled)
+        if (_trace)
         {
             Console.Error.WriteLine(resolved is null
                 ? $"解決失敗: {name.FullName}"
@@ -192,39 +311,9 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         }
     }
 
-    protected override AssemblyDefinition? SearchDirectory(
-        AssemblyNameReference name,
-        IEnumerable<string> directories,
-        ReaderParameters parameters)
+    private AssemblyDefinition? TryReadMatching(AssemblyNameReference name, string candidatePath, ReaderParameters parameters)
     {
-        var extensions = name.IsWindowsRuntime ? new[] { ".winmd", ".dll" } : new[] { ".dll", ".exe" };
-        foreach (var directory in directories)
-        {
-            Func<AssemblyNameReference, AssemblyNameReference, bool> policy =
-                _frameworkDirectories.Contains(Path.TrimEndingDirectorySeparator(directory))
-                    ? IsCompatibleFrameworkIdentity
-                    : HasSameIdentity;
-            foreach (var extension in extensions)
-            {
-                var candidatePath = Path.Combine(directory, name.Name + extension);
-                ProbeCount++;
-                var candidate = TryReadMatching(name, candidatePath, parameters, policy);
-                if (candidate is not null)
-                {
-                    return candidate;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private AssemblyDefinition? TryReadMatching(
-        AssemblyNameReference name,
-        string candidatePath,
-        ReaderParameters parameters,
-        Func<AssemblyNameReference, AssemblyNameReference, bool> accepts)
-    {
+        _probeCount++;
         if (!File.Exists(candidatePath))
         {
             return null;
@@ -235,17 +324,18 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         {
             parameters.AssemblyResolver ??= this;
             candidate = AssemblyDefinition.ReadAssembly(candidatePath, parameters);
-            if (accepts(name, candidate.Name))
+            if (Accepts(name, candidate.Name))
             {
                 var resolved = candidate;
                 candidate = null;
                 return resolved;
             }
         }
-        catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
-            // Match Cecil's base resolver: an invalid or unreadable candidate does not prevent
-            // probing the remaining extensions and search directories.
+            // Like Cecil's base resolver, an invalid or unreadable candidate does not prevent
+            // probing the remaining extensions and locations. Cecil reports a truncated or
+            // fuzzed candidate through the same runtime exceptions as any broken image.
         }
         finally
         {
@@ -254,6 +344,22 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
 
         return null;
     }
+
+    private bool Accepts(AssemblyNameReference requested, AssemblyNameReference candidate) => _policy switch
+    {
+        IdentityPolicy.Exact => HasSameIdentity(requested, candidate),
+        _ => IsCompatibleFrameworkIdentity(requested, candidate),
+    };
+
+    /// <summary>
+    /// An assembly name comes from the referencing file's metadata; one that is not a plain
+    /// file name would probe outside the search directories.
+    /// </summary>
+    private static bool IsSafeFileName(string? name) =>
+        !string.IsNullOrEmpty(name) &&
+        name != "." && name != ".." &&
+        string.Equals(Path.GetFileName(name), name, StringComparison.Ordinal) &&
+        name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
 
     private static bool HasSameIdentity(AssemblyNameReference requested, AssemblyNameReference candidate) =>
         HasSameStrongNameParts(requested, candidate) && requested.Version == candidate.Version;

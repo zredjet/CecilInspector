@@ -8,6 +8,7 @@ internal static class CecilFormatting
     private static readonly ConditionalWeakTable<TypeDefinition, CollisionInfo> CollisionCache = new();
     private static readonly Func<TypeReference, string> PlainLeafFormatter = PlainLeaf;
     private static readonly Func<TypeReference, string> ScopedLeafFormatter = ScopedLeaf;
+    private static readonly string[] AccessorPrefixes = ["get_", "set_", "add_", "remove_", "raise_"];
 
     /// <summary>
     /// Canonical display form: nested types use '+', generic arguments are joined with ", ",
@@ -79,11 +80,13 @@ internal static class CecilFormatting
         $"{Type(accessor.DeclaringType)}::{@event.Name} : {ContextualType(@event.EventType, accessor)}";
 
     /// <summary>
-    /// Event symbol synthesized from an unresolvable accessor reference (add_/remove_/raise_).
+    /// Event symbol synthesized from an unresolvable accessor reference. add_/remove_ take the
+    /// handler delegate, which is the event type; raise_ takes the delegate's own parameters,
+    /// from which the event type cannot be inferred, so it is left out.
     /// </summary>
     public static string Event(MethodReference accessor)
     {
-        var eventType = accessor.Parameters.Count > 0
+        var eventType = accessor.Parameters.Count > 0 && !accessor.Name.StartsWith("raise_", StringComparison.Ordinal)
             ? $" : {ContextualType(accessor.Parameters[0].ParameterType, accessor)}"
             : string.Empty;
         return $"{Type(accessor.DeclaringType)}::{StripAccessorPrefix(accessor.Name)}{eventType}";
@@ -99,7 +102,7 @@ internal static class CecilFormatting
 
     public static string StripAccessorPrefix(string name)
     {
-        foreach (var prefix in new[] { "get_", "set_", "add_", "remove_", "raise_" })
+        foreach (var prefix in AccessorPrefixes)
         {
             if (name.StartsWith(prefix, StringComparison.Ordinal))
             {
@@ -124,6 +127,46 @@ internal static class CecilFormatting
     }
 
     public static string TypeIdentity(TypeReference type) => ScopedType(type);
+
+    /// <summary>
+    /// The name without generic arity markers (<c>Cache`1</c> → <c>Cache</c>,
+    /// <c>Outer`1+Inner`2</c> → <c>Outer+Inner</c>), or null when there is none, so a type can
+    /// be matched the way it is written in source, as methods already can.
+    /// </summary>
+    public static string? WithoutArity(string name)
+    {
+        var backtick = name.IndexOf('`', StringComparison.Ordinal);
+        if (backtick < 0)
+        {
+            return null;
+        }
+
+        var builder = new System.Text.StringBuilder(name.Length);
+        var start = 0;
+        while (backtick >= 0)
+        {
+            var end = backtick + 1;
+            while (end < name.Length && char.IsAsciiDigit(name[end]))
+            {
+                end++;
+            }
+
+            if (end == backtick + 1)
+            {
+                // A lone backtick is part of the name.
+                builder.Append(name, start, end - start);
+            }
+            else
+            {
+                builder.Append(name, start, backtick - start);
+            }
+
+            start = end;
+            backtick = name.IndexOf('`', start);
+        }
+
+        return builder.Append(name, start, name.Length - start).ToString();
+    }
 
     private static string MethodName(MethodReference method)
     {
