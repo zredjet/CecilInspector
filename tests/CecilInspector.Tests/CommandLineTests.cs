@@ -80,6 +80,7 @@ public sealed class CommandLineTests
     [InlineData("--symbols", "1")]
     [InlineData("--kind", "64")]
     [InlineData("--kind", "1,2")]
+    [InlineData("--format", "1")]
     public void RejectsNumericEnumValues(string option, string value)
     {
         var result = CommandLine.Parse(["search", "a.dll", "Save", option, value]);
@@ -180,6 +181,43 @@ public sealed class CommandLineTests
 
         Assert.False(result.ShowVersion);
         Assert.Contains("不明なコマンド", result.Error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("msbuild")]
+    [InlineData("MSBUILD")]
+    public void ParsesReportFormat(string value)
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--format", value]);
+
+        var options = Assert.IsType<SearchOptions>(result.Options);
+        Assert.Equal(ReportFormat.MsBuild, options.Format);
+    }
+
+    [Fact]
+    public void ReportFormatDefaultsToText()
+    {
+        var options = Assert.IsType<SearchOptions>(CommandLine.Parse(["search", "a.dll", "Save"]).Options);
+
+        Assert.Equal(ReportFormat.Text, options.Format);
+    }
+
+    [Fact]
+    public void RejectsUnknownReportFormat()
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--format", "xml"]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("--format", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DumpDoesNotAcceptReportFormat()
+    {
+        var result = CommandLine.Parse(["dump", "a.dll", "--format", "msbuild"]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("不明なオプション", result.Error, StringComparison.Ordinal);
     }
 
     [Fact]

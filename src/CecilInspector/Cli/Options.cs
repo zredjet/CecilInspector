@@ -34,6 +34,17 @@ public enum SymbolMode
     Required,
 }
 
+/// <summary>
+/// Search report layout. <see cref="MsBuild"/> prints one hit per line in the
+/// <c>path(line,col): info CODE: message</c> form that Visual Studio's Output window and
+/// VS Code's <c>$msCompile</c> problem matcher turn into clickable locations.
+/// </summary>
+public enum ReportFormat
+{
+    Text,
+    MsBuild,
+}
+
 public abstract record AppOptions(
     string InputPath,
     bool Recursive,
@@ -51,7 +62,8 @@ public sealed record SearchOptions(
     SymbolMode SymbolMode,
     int MaxResults,
     string? OutputPath,
-    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
+    IReadOnlyList<string> ReferencePaths,
+    ReportFormat Format = ReportFormat.Text) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
 
 public sealed record DumpOptions(
     string InputPath,

@@ -74,6 +74,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 | `--kind` | `namespace,type,method,property,field,event,all`（カンマ区切り） | `all` |
 | `--scope` | `definitions`, `references`, `all` | `definitions` |
 | `--match` | `contains`, `exact`, `regex` | `contains` |
+| `--format` | `text`, `msbuild`（エディターがジャンプできる`path(line,col):`形式） | `text` |
 | `--case-sensitive` | 大文字・小文字を区別 | 区別しない |
 | `--symbols` | `auto`, `off`, `required` | `auto` |
 | `--max-results` | メモリに保持して表示する最大件数（総件数は全件集計） | `1000` |
@@ -111,6 +112,43 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 - 名前空間、型、フィールド定義: PDBに宣言位置がないため、通常は行番号なし
 
 Releaseビルドの最適化や非同期/イテレーターのステートマシンにより、表示行がソース上の直感的な位置とずれる場合があります。PDBがない場合も検索自体は可能です。
+
+### エディター連携
+
+検索結果の`source:`行はPDBのシーケンスポイントから得た`パス:行:列`です。ソースがそのパスに存在すれば、次の方法で該当行を直接開けます。
+
+**VS Codeの統合ターミナル**: 既定の出力のままで、`source:`行のパスをCtrl（macOSはCmd）+クリックすると該当行が開きます。空白を含むパスはターミナルのリンク検出に掛からないことがあります。
+
+**Visual Studioの外部ツール**: `--format msbuild`を付けると、ヒットを1行ずつ`パス(行,列): info CI0001: [definition/method] シンボル`の形式で出力します。**ツール > 外部ツール**に次のように登録し、「出力ウィンドウを使用」（Use Output window）を有効にすると、出力ウィンドウの行をダブルクリック、または「次のメッセージへ移動」で該当行にジャンプできます。
+
+| 項目 | 値 |
+|---|---|
+| コマンド | `C:\tools\cecil-inspector.exe` |
+| 引数 | `search "$(SolutionDir)" "$(CurText)" --scope all --format msbuild` |
+| 初期ディレクトリ | `$(SolutionDir)` |
+| オプション | 出力ウィンドウを使用、（必要なら）引数の入力を求める |
+
+エディターで識別子を選択してからツールを実行すると、その名前を検索します。`CI0001`は定義、`CI0002`は参照で、参照は`(in 呼び出し元) @ IL_xxxx`を末尾に付けます。位置が取れないヒット（名前空間や型の定義など）は`パス(行):`接頭辞なしで出力し、誤ってDLLを開こうとしないようにしています。severityを`info`にしているのは、MSBuildの`<Exec>`から実行しても本物の警告として扱われないようにするためです。
+
+**VS Codeのタスク**: 組み込みの問題マッチャー`$msCompile`が同じ形式を解釈するので、`tasks.json`に次のように登録すると結果が「問題」パネルに一覧表示され、クリックで該当行に飛べます。
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cecil-inspector: search",
+      "type": "shell",
+      "command": "cecil-inspector",
+      "args": ["search", "${workspaceFolder}/bin", "${input:query}", "--scope", "all", "--format", "msbuild"],
+      "problemMatcher": "$msCompile"
+    }
+  ],
+  "inputs": [{ "id": "query", "type": "promptString", "description": "検索文言" }]
+}
+```
+
+PDBが無い、または記録されたソースパスが手元と異なる場合はリンクになりません。
 
 ## メタデータダンプ
 

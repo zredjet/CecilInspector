@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using CecilInspector.Core;
 using Xunit;
 
@@ -154,6 +155,23 @@ public sealed class CliProcessTests
         Assert.Equal(0, result.ExitCode);
         Assert.StartsWith("cecil-inspector 0.", result.StandardOutput, StringComparison.Ordinal);
         Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
+    public async Task MsBuildFormatPrintsNavigableOrigins()
+    {
+        var result = await RunAsync(
+            "search", TestAssembly, "EstimateTarget", "--kind", "method", "--match", "exact", "--scope", "all",
+            "--format", "msbuild");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Matches(
+            new Regex(@"^.+\(\d+,\d+\): info CI0001: \[definition/method\] ", RegexOptions.Multiline),
+            result.StandardOutput);
+        Assert.Matches(
+            new Regex(@"^.+\(\d+,\d+\): info CI0002: \[reference/method\] .* \(in .*\) @ IL_[0-9A-F]{4}$", RegexOptions.Multiline),
+            result.StandardOutput);
+        Assert.DoesNotContain("  source:", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Fact]

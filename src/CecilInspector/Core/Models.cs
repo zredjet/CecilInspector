@@ -21,6 +21,9 @@ public enum HitKind
 public sealed record SourceLocation(string Document, int Line, int Column)
 {
     public override string ToString() => Column > 0 ? $"{Document}:{Line}:{Column}" : $"{Document}:{Line}";
+
+    /// <summary>MSBuild canonical origin, e.g. <c>File.cs(12,5)</c>.</summary>
+    public string ToMsBuildString() => Column > 0 ? $"{Document}({Line},{Column})" : $"{Document}({Line})";
 }
 
 public sealed record SearchHit(

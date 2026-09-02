@@ -35,6 +35,56 @@ public sealed class TextReportTests
     }
 
     [Fact]
+    public void MsBuildFormatWritesOneNavigableLinePerHit()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Save", SearchKinds.All, SearchScope.All, MatchMode.Exact,
+            true, true, SymbolMode.Auto, 1, null, [], ReportFormat.MsBuild);
+        SearchHit[] hits =
+        [
+            new("in.dll", "In", HitScope.Reference, HitKind.Method, "T::Save() : System.Void",
+                "T::Caller() : System.Void", new SourceLocation("a.cs", 12, 5), 0x1A),
+            new("in.dll", "In", HitScope.Definition, HitKind.Method, "T::Save() : System.Void",
+                null, new SourceLocation("a.cs", 30, 0), null),
+            new("in.dll", "In", HitScope.Definition, HitKind.Type, "T", null, null, null),
+        ];
+        var result = new SearchResult(hits, 4, [new HitCount(HitScope.Reference, HitKind.Method, 4)], [], 1, 1, 1, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        var lines = writer.ToString().Split(Environment.NewLine);
+        Assert.Contains("Query: Save", lines);
+        Assert.Contains(
+            "a.cs(12,5): info CI0002: [reference/method] T::Save() : System.Void (in T::Caller() : System.Void) @ IL_001A",
+            lines);
+        Assert.Contains("a.cs(30): info CI0001: [definition/method] T::Save() : System.Void", lines);
+        Assert.Contains("[definition/type] T  assembly: in.dll", lines);
+        Assert.DoesNotContain(lines, line => line.Contains("in.dll(", StringComparison.Ordinal));
+        Assert.Contains("... 1件を省略しました。--max-resultsで変更できます。", lines);
+    }
+
+    [Fact]
+    public void MsBuildFormatCannotBeInjectedThroughSymbols()
+    {
+        var options = new SearchOptions(
+            "in.dll", "x", SearchKinds.All, SearchScope.Definitions, MatchMode.Contains,
+            true, true, SymbolMode.Off, 10, null, [], ReportFormat.MsBuild);
+        var hit = new SearchHit(
+            "in.dll", "In", HitScope.Definition, HitKind.Method, "Bad\nevil.cs(1,1): error X: Name",
+            null, new SourceLocation("a.cs", 1, 1), null);
+        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Definition, HitKind.Method, 1)], [], 1, 1, 1, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        var lines = writer.ToString().Split(Environment.NewLine);
+        Assert.Single(lines, line => line.StartsWith("a.cs(", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, line => line.StartsWith("evil.cs(", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("Bad\\nevil.cs(1,1)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void EscapesSymbolsAndOmitsFooterWhenNothingWasDropped()
     {
         var options = new SearchOptions(

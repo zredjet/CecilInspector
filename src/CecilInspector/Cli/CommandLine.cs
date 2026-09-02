@@ -22,6 +22,8 @@ public static class CommandLine
                                  (既定: all、カンマ区切り)
           --scope <value>        definitions | references | all (既定: definitions)
           --match <value>        contains | exact | regex (既定: contains)
+          --format <value>       text | msbuild (既定: text)
+                                 msbuildはエディターが解釈できる path(line,col): 形式で出力する
           --case-sensitive       大文字・小文字を区別する (既定: 区別しない)
           --symbols <value>      auto | off | required (既定: auto)
           --max-results <number> 保持して表示する最大件数 (総件数は別途集計、既定: 1000)
@@ -40,6 +42,7 @@ public static class CommandLine
           cecil-inspector search ./bin CustomerService --kind type,method
           cecil-inspector search app.dll Save --kind method --scope all --match exact
           cecil-inspector search app.dll -- -Prefixed --match exact
+          cecil-inspector search ./bin Save --scope all --format msbuild
           cecil-inspector dump app.dll --include-il --output metadata.txt
         """;
 
@@ -81,6 +84,7 @@ public static class CommandLine
         var kinds = SearchKinds.All;
         var scope = SearchScope.Definitions;
         var matchMode = MatchMode.Contains;
+        var format = ReportFormat.Text;
         var ignoreCase = true;
         var recursive = true;
         var symbolMode = SymbolMode.Auto;
@@ -118,6 +122,13 @@ public static class CommandLine
                     if (!reader.TryTakeEnum(out symbolMode))
                     {
                         return ParseResult.Failure("--symbolsには auto, off, required を指定してください。");
+                    }
+
+                    break;
+                case "--format":
+                    if (!reader.TryTakeEnum(out format))
+                    {
+                        return ParseResult.Failure("--formatには text, msbuild を指定してください。");
                     }
 
                     break;
@@ -187,7 +198,8 @@ public static class CommandLine
         }
 
         return ParseResult.Success(new SearchOptions(
-            input, query, kinds, scope, matchMode, ignoreCase, recursive, symbolMode, maxResults, output, referencePaths));
+            input, query, kinds, scope, matchMode, ignoreCase, recursive, symbolMode, maxResults, output, referencePaths,
+            format));
     }
 
     private static ParseResult ParseDump(string[] args)
