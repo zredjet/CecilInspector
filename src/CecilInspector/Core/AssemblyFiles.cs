@@ -13,9 +13,6 @@ public static class AssemblyFiles
         ".dll", ".exe", ".netmodule",
     };
 
-    public static IReadOnlyList<string> Discover(string inputPath, bool recursive) =>
-        DiscoverDetailed(inputPath, recursive).Files.ToArray();
-
     public static AssemblyDiscoveryResult DiscoverDetailed(string inputPath, bool recursive)
     {
         var fullPath = Path.GetFullPath(inputPath);

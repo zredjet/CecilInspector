@@ -89,64 +89,50 @@ public sealed class AssemblySearcherTests
     [Fact]
     public void AutoSymbolsFallsBackWhenPdbIsCorrupt()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
         var assembly = Path.Combine(directory, "Target.dll");
         var pdb = Path.Combine(directory, "Target.pdb");
         File.Copy(ThisAssembly, assembly);
         File.WriteAllBytes(pdb, "BSJB"u8.ToArray());
-        try
+        var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
         {
-            var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
-            {
-                InputPath = assembly,
-                SymbolMode = SymbolMode.Auto,
-            };
+            InputPath = assembly,
+            SymbolMode = SymbolMode.Auto,
+        };
 
-            var result = new AssemblySearcher().Search(options);
+        var result = new AssemblySearcher().Search(options);
 
-            Assert.Single(result.Hits);
-            Assert.Equal(1, result.FilesSucceeded);
-            Assert.Equal(0, result.FilesWithSymbols);
-            Assert.Empty(result.Errors);
-            var warning = Assert.Single(result.Warnings);
-            Assert.Equal(assembly, warning.FilePath);
-            Assert.Contains("シンボルなしで解析", warning.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+        Assert.Single(result.Hits);
+        Assert.Equal(1, result.FilesSucceeded);
+        Assert.Equal(0, result.FilesWithSymbols);
+        Assert.Empty(result.Errors);
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(assembly, warning.FilePath);
+        Assert.Contains("シンボルなしで解析", warning.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public void RequiredSymbolsReportsMismatchedPdb()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
         var assembly = Path.Combine(directory, "Target.dll");
         var pdb = Path.Combine(directory, "Target.pdb");
         File.Copy(ThisAssembly, assembly);
         var otherAssembly = typeof(AssemblySearcher).Assembly.Location;
         File.Copy(Path.ChangeExtension(otherAssembly, ".pdb"), pdb);
-        try
+        var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
         {
-            var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
-            {
-                InputPath = assembly,
-                SymbolMode = SymbolMode.Required,
-            };
+            InputPath = assembly,
+            SymbolMode = SymbolMode.Required,
+        };
 
-            var result = new AssemblySearcher().Search(options);
+        var result = new AssemblySearcher().Search(options);
 
-            Assert.Equal(0, result.FilesSucceeded);
-            var error = Assert.Single(result.Errors);
-            Assert.Contains("matching", error.Message, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+        Assert.Equal(0, result.FilesSucceeded);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("matching", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -294,123 +280,109 @@ public sealed class AssemblySearcherTests
     [Fact]
     public void CallSiteTypesWithSameFullNameButDifferentScopesRemainDistinct()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
         var assemblyPath = Path.Combine(directory, "CallSite.dll");
-        try
+        using (var assembly = AssemblyDefinition.CreateAssembly(
+                   new AssemblyNameDefinition("CallSite", new Version(1, 0)),
+                   "CallSite",
+                   ModuleKind.Dll))
         {
-            using (var assembly = AssemblyDefinition.CreateAssembly(
-                       new AssemblyNameDefinition("CallSite", new Version(1, 0)),
-                       "CallSite",
-                       ModuleKind.Dll))
-            {
-                var module = assembly.MainModule;
-                var firstScope = new AssemblyNameReference("First.Contracts", new Version(1, 0));
-                var secondScope = new AssemblyNameReference("Second.Contracts", new Version(1, 0));
-                module.AssemblyReferences.Add(firstScope);
-                module.AssemblyReferences.Add(secondScope);
-                var first = new TypeReference("Shared", "Model", module, firstScope);
-                var second = new TypeReference("Shared", "Model", module, secondScope);
-                var callSite = new Mono.Cecil.CallSite(module.TypeSystem.Void);
-                callSite.Parameters.Add(new ParameterDefinition(first));
-                callSite.Parameters.Add(new ParameterDefinition(second));
+            var module = assembly.MainModule;
+            var firstScope = new AssemblyNameReference("First.Contracts", new Version(1, 0));
+            var secondScope = new AssemblyNameReference("Second.Contracts", new Version(1, 0));
+            module.AssemblyReferences.Add(firstScope);
+            module.AssemblyReferences.Add(secondScope);
+            var first = new TypeReference("Shared", "Model", module, firstScope);
+            var second = new TypeReference("Shared", "Model", module, secondScope);
+            var callSite = new Mono.Cecil.CallSite(module.TypeSystem.Void);
+            callSite.Parameters.Add(new ParameterDefinition(first));
+            callSite.Parameters.Add(new ParameterDefinition(second));
 
-                var type = new TypeDefinition("Fixtures", "Caller", TypeAttributes.Public | TypeAttributes.Class);
-                module.Types.Add(type);
-                var method = new MethodDefinition(
-                    "Call",
-                    MethodAttributes.Public | MethodAttributes.Static,
-                    module.TypeSystem.Void);
-                method.Body.Instructions.Add(Instruction.Create(OpCodes.Calli, callSite));
-                method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
-                type.Methods.Add(method);
-                assembly.Write(assemblyPath);
-            }
-
-            var result = new AssemblySearcher().Search(Options(
-                "Shared.Model",
-                SearchKinds.Type,
-                SearchScope.References,
-                MatchMode.Exact) with
-            {
-                InputPath = assemblyPath,
-                SymbolMode = SymbolMode.Off,
-            });
-
-            Assert.Equal(2, result.TotalMatches);
-            Assert.Equal(2, result.Hits.Select(hit => hit.Symbol).Distinct(StringComparer.Ordinal).Count());
-            Assert.Contains(result.Hits, hit => hit.Symbol.Contains("@First.Contracts", StringComparison.Ordinal));
-            Assert.Contains(result.Hits, hit => hit.Symbol.Contains("@Second.Contracts", StringComparison.Ordinal));
+            var type = new TypeDefinition("Fixtures", "Caller", TypeAttributes.Public | TypeAttributes.Class);
+            module.Types.Add(type);
+            var method = new MethodDefinition(
+                "Call",
+                MethodAttributes.Public | MethodAttributes.Static,
+                module.TypeSystem.Void);
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Calli, callSite));
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            type.Methods.Add(method);
+            assembly.Write(assemblyPath);
         }
-        finally
+
+        var result = new AssemblySearcher().Search(Options(
+            "Shared.Model",
+            SearchKinds.Type,
+            SearchScope.References,
+            MatchMode.Exact) with
         {
-            Directory.Delete(directory, true);
-        }
+            InputPath = assemblyPath,
+            SymbolMode = SymbolMode.Off,
+        });
+
+        Assert.Equal(2, result.TotalMatches);
+        Assert.Equal(2, result.Hits.Select(hit => hit.Symbol).Distinct(StringComparer.Ordinal).Count());
+        Assert.Contains(result.Hits, hit => hit.Symbol.Contains("@First.Contracts", StringComparison.Ordinal));
+        Assert.Contains(result.Hits, hit => hit.Symbol.Contains("@Second.Contracts", StringComparison.Ordinal));
     }
 
     [Fact]
     public void ContextualFormattingSubstitutesGenericParametersInsideComplexTypeSpecifications()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
         var assemblyPath = Path.Combine(directory, "ComplexTypes.dll");
-        try
+        using (var assembly = AssemblyDefinition.CreateAssembly(
+                   new AssemblyNameDefinition("ComplexTypes", new Version(1, 0)),
+                   "ComplexTypes",
+                   ModuleKind.Dll))
         {
-            using (var assembly = AssemblyDefinition.CreateAssembly(
-                       new AssemblyNameDefinition("ComplexTypes", new Version(1, 0)),
-                       "ComplexTypes",
-                       ModuleKind.Dll))
+            var module = assembly.MainModule;
+            var contracts = new AssemblyNameReference("Contracts", new Version(1, 0));
+            module.AssemblyReferences.Add(contracts);
+            var openTarget = new TypeReference("Contracts", "GenericTarget`1", module, contracts);
+            var genericParameter = new GenericParameter("T", openTarget);
+            openTarget.GenericParameters.Add(genericParameter);
+            var closedArgument = new TypeReference("Fixtures", "ClosedArgument", module, module);
+            var closedTarget = new GenericInstanceType(openTarget);
+            closedTarget.GenericArguments.Add(closedArgument);
+            var marker = new TypeReference("Contracts", "Marker", module, contracts);
+
+            var functionPointer = new FunctionPointerType
             {
-                var module = assembly.MainModule;
-                var contracts = new AssemblyNameReference("Contracts", new Version(1, 0));
-                module.AssemblyReferences.Add(contracts);
-                var openTarget = new TypeReference("Contracts", "GenericTarget`1", module, contracts);
-                var genericParameter = new GenericParameter("T", openTarget);
-                openTarget.GenericParameters.Add(genericParameter);
-                var closedArgument = new TypeReference("Fixtures", "ClosedArgument", module, module);
-                var closedTarget = new GenericInstanceType(openTarget);
-                closedTarget.GenericArguments.Add(closedArgument);
-                var marker = new TypeReference("Contracts", "Marker", module, contracts);
+                ReturnType = genericParameter,
+            };
+            functionPointer.Parameters.Add(new ParameterDefinition(new ArrayType(genericParameter, 2)));
+            var target = new MethodReference("Consume", module.TypeSystem.Void, closedTarget);
+            target.Parameters.Add(new ParameterDefinition(new RequiredModifierType(marker, genericParameter)));
+            target.Parameters.Add(new ParameterDefinition(functionPointer));
 
-                var functionPointer = new FunctionPointerType
-                {
-                    ReturnType = genericParameter,
-                };
-                functionPointer.Parameters.Add(new ParameterDefinition(new ArrayType(genericParameter, 2)));
-                var target = new MethodReference("Consume", module.TypeSystem.Void, closedTarget);
-                target.Parameters.Add(new ParameterDefinition(new RequiredModifierType(marker, genericParameter)));
-                target.Parameters.Add(new ParameterDefinition(functionPointer));
-
-                var type = new TypeDefinition("Fixtures", "Caller", TypeAttributes.Public | TypeAttributes.Class);
-                module.Types.Add(type);
-                var method = new MethodDefinition(
-                    "Call",
-                    MethodAttributes.Public | MethodAttributes.Static,
-                    module.TypeSystem.Void);
-                method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, target));
-                method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
-                type.Methods.Add(method);
-                assembly.Write(assemblyPath);
-            }
-
-            var result = new AssemblySearcher().Search(Options(
-                "Consume",
-                SearchKinds.Method,
-                SearchScope.References,
-                MatchMode.Exact) with
-            {
-                InputPath = assemblyPath,
-                SymbolMode = SymbolMode.Off,
-            });
-
-            var symbol = Assert.Single(result.Hits).Symbol;
-            Assert.Contains("Fixtures.ClosedArgument modreq(Contracts.Marker)", symbol, StringComparison.Ordinal);
-            Assert.Contains("method Fixtures.ClosedArgument *(Fixtures.ClosedArgument[,])", symbol, StringComparison.Ordinal);
+            var type = new TypeDefinition("Fixtures", "Caller", TypeAttributes.Public | TypeAttributes.Class);
+            module.Types.Add(type);
+            var method = new MethodDefinition(
+                "Call",
+                MethodAttributes.Public | MethodAttributes.Static,
+                module.TypeSystem.Void);
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, target));
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            type.Methods.Add(method);
+            assembly.Write(assemblyPath);
         }
-        finally
+
+        var result = new AssemblySearcher().Search(Options(
+            "Consume",
+            SearchKinds.Method,
+            SearchScope.References,
+            MatchMode.Exact) with
         {
-            Directory.Delete(directory, true);
-        }
+            InputPath = assemblyPath,
+            SymbolMode = SymbolMode.Off,
+        });
+
+        var symbol = Assert.Single(result.Hits).Symbol;
+        Assert.Contains("Fixtures.ClosedArgument modreq(Contracts.Marker)", symbol, StringComparison.Ordinal);
+        Assert.Contains("method Fixtures.ClosedArgument *(Fixtures.ClosedArgument[,])", symbol, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -546,27 +518,86 @@ public sealed class AssemblySearcherTests
     [InlineData(0.97)]
     public void TruncatedImageIsReportedAsScanErrorNotCrash(double keepRatio)
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        try
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
+        var bytes = File.ReadAllBytes(ThisAssembly);
+        var truncated = Path.Combine(directory, "Truncated.dll");
+        File.WriteAllBytes(truncated, bytes[..(int)(bytes.Length * keepRatio)]);
+        var options = Options("a", SearchKinds.All, SearchScope.All, MatchMode.Contains) with
         {
-            var bytes = File.ReadAllBytes(ThisAssembly);
-            var truncated = Path.Combine(directory, "Truncated.dll");
-            File.WriteAllBytes(truncated, bytes[..(int)(bytes.Length * keepRatio)]);
-            var options = Options("a", SearchKinds.All, SearchScope.All, MatchMode.Contains) with
+            InputPath = truncated,
+            SymbolMode = SymbolMode.Off,
+        };
+
+        var result = new AssemblySearcher().Search(options);
+
+        Assert.Equal(1, result.FilesSucceeded + result.Errors.Count);
+    }
+
+    [Fact]
+    public void NonRecursiveSearchIgnoresSubdirectories()
+    {
+        using var temp = new TempDirectory();
+        File.Copy(ThisAssembly, temp.File("root.dll"));
+        File.Copy(ThisAssembly, Path.Combine(temp.CreateSubdirectory("nested"), "nested.dll"));
+        var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
+        {
+            InputPath = temp.Path,
+            Recursive = false,
+            SymbolMode = SymbolMode.Off,
+        };
+
+        var result = new AssemblySearcher().Search(options);
+
+        Assert.Equal(1, result.FilesDiscovered);
+        Assert.Equal(temp.File("root.dll"), Assert.Single(result.Hits).AssemblyPath);
+    }
+
+    [Fact]
+    public void CaseSensitiveSearchRequiresMatchingCase()
+    {
+        var insensitive = Search("estimatetarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact);
+        var sensitive = new AssemblySearcher().Search(
+            Options("estimatetarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
             {
-                InputPath = truncated,
-                SymbolMode = SymbolMode.Off,
-            };
+                IgnoreCase = false,
+            });
 
-            var result = new AssemblySearcher().Search(options);
+        Assert.Single(insensitive.Hits);
+        Assert.Empty(sensitive.Hits);
+    }
 
-            Assert.Equal(1, result.FilesSucceeded + result.Errors.Count);
-        }
-        finally
+    [Fact]
+    public void FindsFieldDefinitionAndReferences()
+    {
+        var result = Search("EstimateCounter", SearchKinds.Field, SearchScope.All, MatchMode.Exact);
+
+        Assert.All(result.Hits, hit => Assert.Equal(HitKind.Field, hit.Kind));
+        Assert.All(result.Hits, hit =>
+            Assert.Equal("CecilInspector.Tests.FieldFixture::EstimateCounter : System.Int32", hit.Symbol));
+        Assert.Single(result.Hits, hit => hit.Scope == HitScope.Definition);
+        Assert.Equal(2, result.Hits.Count(hit => hit.Scope == HitScope.Reference));
+        Assert.All(result.Hits.Where(hit => hit.Scope == HitScope.Reference), hit =>
+            Assert.Contains("::Bump(", hit.Container, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RequiredSymbolsReportsMissingPdb()
+    {
+        using var temp = new TempDirectory();
+        var assembly = temp.File("Target.dll");
+        File.Copy(ThisAssembly, assembly);
+        var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
         {
-            Directory.Delete(directory, true);
-        }
+            InputPath = assembly,
+            SymbolMode = SymbolMode.Required,
+        };
+
+        var result = new AssemblySearcher().Search(options);
+
+        Assert.Equal(0, result.FilesSucceeded);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("PDBが見つかりません", error.Message, StringComparison.Ordinal);
     }
 
     private static SearchResult Search(string query, SearchKinds kinds, SearchScope scope, MatchMode match) =>
@@ -698,4 +729,11 @@ public sealed class GenericSignatureFixture
         fixture.TwoArgs();
         fixture.Wrap<int>(null!);
     }
+}
+
+public static class FieldFixture
+{
+    public static int EstimateCounter;
+
+    public static int Bump() => EstimateCounter = EstimateCounter + 1;
 }

@@ -5,13 +5,6 @@ namespace CecilInspector.Output;
 
 public static class TextReport
 {
-    public static string FormatSearch(SearchResult result, SearchOptions options)
-    {
-        using var text = new StringWriter();
-        WriteSearch(text, result, options);
-        return text.ToString();
-    }
-
     public static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options)
     {
         writer = new GuardedTextWriter(writer);

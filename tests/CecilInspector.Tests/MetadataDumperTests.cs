@@ -47,8 +47,8 @@ public sealed class MetadataDumperTests
     [Fact]
     public void EscapesControlAndUnicodeFormatCharactersFromMetadata()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
         var path = Path.Combine(directory, "ControlChars.dll");
         using (var assembly = AssemblyDefinition.CreateAssembly(
                    new AssemblyNameDefinition("ControlChars", new Version(1, 0)),
@@ -62,24 +62,17 @@ public sealed class MetadataDumperTests
             assembly.Write(path);
         }
 
-        try
-        {
-            var options = new DumpOptions(path, true, false, SymbolMode.Off, null, []);
-            using var writer = new StringWriter();
-            new MetadataDumper().Dump(options, [path], 1, [directory], [], writer);
+        var options = new DumpOptions(path, true, false, SymbolMode.Off, null, []);
+        using var writer = new StringWriter();
+        new MetadataDumper().Dump(options, [path], 1, [directory], [], writer);
 
-            var output = writer.ToString();
-            Assert.DoesNotContain('\u001b', output);
-            Assert.DoesNotContain('\u202E', output);
-            Assert.DoesNotContain('\u2028', output);
-            Assert.DoesNotContain('\u2029', output);
-            Assert.DoesNotContain("\U000E0001", output, StringComparison.Ordinal);
-            Assert.Contains("Bad\\n\\e\\u202E\\u2028\\u2029\\U000E0001Name", output, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+        var output = writer.ToString();
+        Assert.DoesNotContain('\u001b', output);
+        Assert.DoesNotContain('\u202E', output);
+        Assert.DoesNotContain('\u2028', output);
+        Assert.DoesNotContain('\u2029', output);
+        Assert.DoesNotContain("\U000E0001", output, StringComparison.Ordinal);
+        Assert.Contains("Bad\\n\\e\\u202E\\u2028\\u2029\\U000E0001Name", output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -101,6 +94,25 @@ public sealed class MetadataDumperTests
             output,
             StringComparison.Ordinal);
         Assert.DoesNotContain("`2<System.Int32,System.String>", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IncludeIlEmitsInstructionsWithSourceLocations()
+    {
+        var assembly = typeof(MetadataDumperTests).Assembly.Location;
+        var options = new DumpOptions(assembly, true, true, SymbolMode.Required, null, []);
+        using var writer = new StringWriter();
+
+        var result = new MetadataDumper().Dump(options, [assembly], 1, [Path.GetDirectoryName(assembly)!], [], writer);
+
+        var output = writer.ToString();
+        Assert.Equal(1, result.FilesSucceeded);
+        Assert.Contains("Has symbols: True", output, StringComparison.Ordinal);
+        Assert.Contains("SearchFixture::CallTarget() : System.Int32 [", output, StringComparison.Ordinal);
+        Assert.Contains("IL_0000: ", output, StringComparison.Ordinal);
+        Assert.Contains(" call System.Int32 CecilInspector.Tests.SearchFixture::EstimateTarget(System.Int32) // ",
+            output, StringComparison.Ordinal);
+        Assert.Contains("AssemblySearcherTests.cs:", output, StringComparison.Ordinal);
     }
 
     private sealed class FailingWriter : StringWriter

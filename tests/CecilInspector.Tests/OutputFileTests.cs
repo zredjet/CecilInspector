@@ -6,100 +6,103 @@ namespace CecilInspector.Tests;
 public sealed class OutputFileTests
 {
     [Fact]
+    public void NullOutputPathMeansNoReportFile()
+    {
+        Assert.Null(OutputFile.OpenAtomic(null));
+    }
+
+    [Fact]
     public void RefusesToOverwriteAnyExistingFile()
     {
-        var existing = Path.GetTempFileName();
-        try
-        {
-            var error = Assert.Throws<ArgumentException>(() => OutputFile.WriteIfRequested(existing, "x"));
-            Assert.Contains("上書きしません", error.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            File.Delete(existing);
-        }
+        using var temp = new TempDirectory();
+        var existing = temp.File("existing.txt");
+        File.WriteAllText(existing, "keep");
+
+        var error = Assert.Throws<ArgumentException>(() => OutputFile.OpenAtomic(existing));
+
+        Assert.Contains("上書きしません", error.Message, StringComparison.Ordinal);
+        Assert.Equal("keep", File.ReadAllText(existing));
     }
 
     [Fact]
-    public void RefusesAssemblyExtensionEvenWhenFileDoesNotExist()
+    public void RefusesExistingDirectoryAsOutput()
     {
-        var output = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}.dll");
+        using var temp = new TempDirectory();
 
-        var error = Assert.Throws<ArgumentException>(() => OutputFile.WriteIfRequested(output, "x"));
+        var error = Assert.Throws<ArgumentException>(() => OutputFile.OpenAtomic(temp.Path));
+
+        Assert.Contains("上書きしません", error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("report.dll")]
+    [InlineData("report.EXE")]
+    [InlineData("report.netmodule")]
+    public void RefusesAssemblyExtensionEvenWhenFileDoesNotExist(string name)
+    {
+        using var temp = new TempDirectory();
+
+        var error = Assert.Throws<ArgumentException>(() => OutputFile.OpenAtomic(temp.File(name)));
 
         Assert.Contains("アセンブリ拡張子", error.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFiles(temp.Path));
     }
 
     [Fact]
-    public void WritesNewReportFile()
+    public void CommitPublishesUtf8ReportWithoutBomAndRemovesPartialFile()
     {
-        var output = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}.txt");
-        try
+        using var temp = new TempDirectory();
+        var output = temp.File("nested/report.txt");
+
+        using (var report = OutputFile.OpenAtomic(output))
         {
-            OutputFile.WriteIfRequested(output, "report");
-            Assert.Equal("report", File.ReadAllText(output));
+            Assert.NotNull(report);
+            report.Writer.Write("レポート");
+            report.Commit();
         }
-        finally
-        {
-            if (File.Exists(output))
-            {
-                File.Delete(output);
-            }
-        }
+
+        Assert.Equal("レポート"u8.ToArray(), File.ReadAllBytes(output));
+        Assert.Equal([output], Directory.GetFiles(Path.GetDirectoryName(output)!));
     }
 
     [Fact]
     public void DoesNotPublishUncommittedReport()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        var output = Path.Combine(directory, "report.txt");
-        try
-        {
-            using (var report = OutputFile.OpenAtomic(output))
-            {
-                Assert.NotNull(report);
-                report.Writer.Write("partial");
-            }
+        using var temp = new TempDirectory();
+        var output = temp.File("report.txt");
 
-            Assert.False(File.Exists(output));
-            Assert.Empty(Directory.GetFiles(directory));
-        }
-        finally
+        using (var report = OutputFile.OpenAtomic(output))
         {
-            Directory.Delete(directory, true);
+            Assert.NotNull(report);
+            report.Writer.Write("partial");
         }
+
+        Assert.False(File.Exists(output));
+        Assert.Empty(Directory.GetFiles(temp.Path));
     }
 
     [Fact]
     public void RefusesToCommitWhenPartialPathIsReplacedBySymbolicLink()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        var output = Path.Combine(directory, "report.txt");
-        var attacker = Path.Combine(directory, "attacker.txt");
+        using var temp = new TempDirectory();
+        var output = temp.File("report.txt");
+        var attacker = temp.File("attacker.txt");
         File.WriteAllText(attacker, "attacker-controlled");
-        try
+
+        using (var report = OutputFile.OpenAtomic(output))
         {
-            using (var report = OutputFile.OpenAtomic(output))
-            {
-                Assert.NotNull(report);
-                report.Writer.Write("real report");
-                report.Writer.Flush();
+            Assert.NotNull(report);
+            report.Writer.Write("real report");
+            report.Writer.Flush();
 
-                var partial = Assert.Single(Directory.GetFiles(directory, "*.partial"));
-                File.Move(partial, partial + ".real");
-                File.CreateSymbolicLink(partial, attacker);
+            var partial = Assert.Single(Directory.GetFiles(temp.Path, "*.partial"));
+            File.Move(partial, partial + ".real");
+            File.CreateSymbolicLink(partial, attacker);
 
-                var error = Assert.Throws<IOException>(report.Commit);
-                Assert.Contains("差し替え", error.Message, StringComparison.Ordinal);
-            }
-
-            Assert.False(File.Exists(output));
+            var error = Assert.Throws<IOException>(report.Commit);
+            Assert.Contains("差し替え", error.Message, StringComparison.Ordinal);
         }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+
+        Assert.False(File.Exists(output));
     }
 }

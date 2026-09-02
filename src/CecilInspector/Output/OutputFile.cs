@@ -9,18 +9,6 @@ internal static class OutputFile
         ".dll", ".exe", ".netmodule",
     };
 
-    public static void WriteIfRequested(string? outputPath, string contents)
-    {
-        using var report = OpenAtomic(outputPath);
-        if (report is null)
-        {
-            return;
-        }
-
-        report.Writer.Write(contents);
-        report.Commit();
-    }
-
     public static AtomicReportFile? OpenAtomic(string? outputPath)
     {
         if (outputPath is null)
@@ -80,6 +68,10 @@ internal sealed class AtomicReportFile : IDisposable
         Writer.Dispose();
         _writerDisposed = true;
 
+        // The exclusive handle is released above, so this check-then-move has an inherent
+        // window; it defends against a swap that happened while the report was written, and
+        // the README requires a trusted output folder for the rest. Move(overwrite: false)
+        // itself refuses a final path that appeared in the meantime.
         var attributes = File.GetAttributes(_partialPath);
         if (attributes.HasFlag(FileAttributes.ReparsePoint))
         {

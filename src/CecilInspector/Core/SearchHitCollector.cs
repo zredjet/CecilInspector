@@ -18,7 +18,7 @@ internal sealed class SearchHitCollector
     {
         TotalMatches = checked(TotalMatches + 1);
         var key = (scope, kind);
-        _counts[key] = _counts.GetValueOrDefault(key) + 1;
+        _counts[key] = checked(_counts.GetValueOrDefault(key) + 1);
 
         if (_hits.Count < _retentionLimit)
         {

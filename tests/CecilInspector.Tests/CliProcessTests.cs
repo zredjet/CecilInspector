@@ -12,22 +12,15 @@ public sealed class CliProcessTests
     [Fact]
     public async Task PartialScanUsesExitCodeThreeAndStderrDiagnostics()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
         File.Copy(typeof(CliProcessTests).Assembly.Location, Path.Combine(directory, "good.dll"));
         File.WriteAllText(Path.Combine(directory, "bad.dll"), "not an assembly");
-        try
-        {
-            var result = await RunAsync("search", directory, "NoUniqueMatchExpected", "--kind", "method", "--symbols", "off");
+        var result = await RunAsync("search", directory, "NoUniqueMatchExpected", "--kind", "method", "--symbols", "off");
 
-            Assert.Equal(3, result.ExitCode);
-            Assert.Contains("警告:", result.StandardError, StringComparison.Ordinal);
-            Assert.DoesNotContain("警告:", result.StandardOutput, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+        Assert.Equal(3, result.ExitCode);
+        Assert.Contains("警告:", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("警告:", result.StandardOutput, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -101,27 +94,20 @@ public sealed class CliProcessTests
     [InlineData("dump")]
     public async Task InvalidReferencePathIsRejectedBeforeOutputIsCreated(string command)
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        try
-        {
-            var output = Path.Combine(directory, "out", "report.txt");
-            var missing = Path.Combine(directory, "missing");
-            string[] positional = command == "search" ? ["search", TestAssembly, "Estimate"] : ["dump", TestAssembly];
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
+        var output = Path.Combine(directory, "out", "report.txt");
+        var missing = Path.Combine(directory, "missing");
+        string[] positional = command == "search" ? ["search", TestAssembly, "Estimate"] : ["dump", TestAssembly];
 
-            var result = await RunAsync([
-                .. positional, "--symbols", "off", "--output", output, "--reference-path", missing]);
+        var result = await RunAsync([
+            .. positional, "--symbols", "off", "--output", output, "--reference-path", missing]);
 
-            Assert.Equal(2, result.ExitCode);
-            Assert.Empty(result.StandardOutput);
-            Assert.Contains("依存アセンブリの検索フォルダ", result.StandardError, StringComparison.Ordinal);
-            Assert.False(Directory.Exists(Path.Combine(directory, "out")));
-            Assert.Empty(Directory.GetFiles(directory, "*.partial", SearchOption.AllDirectories));
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+        Assert.Equal(2, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("依存アセンブリの検索フォルダ", result.StandardError, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(directory, "out")));
+        Assert.Empty(Directory.GetFiles(directory, "*.partial", SearchOption.AllDirectories));
     }
 
     [Fact]
@@ -146,25 +132,57 @@ public sealed class CliProcessTests
     [Fact]
     public async Task CorruptPdbIsWarnedAboutButDoesNotFailTheScan()
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        try
-        {
-            var assembly = Path.Combine(directory, "Target.dll");
-            File.Copy(TestAssembly, assembly);
-            File.WriteAllBytes(Path.Combine(directory, "Target.pdb"), "BSJB"u8.ToArray());
+        using var temp = new TempDirectory();
+        var directory = temp.Path;
+        var assembly = Path.Combine(directory, "Target.dll");
+        File.Copy(TestAssembly, assembly);
+        File.WriteAllBytes(Path.Combine(directory, "Target.pdb"), "BSJB"u8.ToArray());
 
-            var result = await RunAsync("search", assembly, "EstimateTarget", "--kind", "method", "--match", "exact");
+        var result = await RunAsync("search", assembly, "EstimateTarget", "--kind", "method", "--match", "exact");
 
-            Assert.Equal(0, result.ExitCode);
-            Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
-            Assert.Contains("警告:", result.StandardError, StringComparison.Ordinal);
-            Assert.Contains("シンボルなしで解析", result.StandardError, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(directory, true);
-        }
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("警告:", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("シンボルなしで解析", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MissingInputIsAnInputError()
+    {
+        using var temp = new TempDirectory();
+
+        var result = await RunAsync("search", temp.File("missing.dll"), "Save");
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("入力パスが見つかりません", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MaxResultsTruncatesReportAndKeepsTotal()
+    {
+        var result = await RunAsync(
+            "search", TestAssembly, "Estimate", "--kind", "all", "--max-results", "1", "--symbols", "off");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("--max-resultsで変更できます", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(1, result.StandardOutput.Split("[definition/").Length - 1);
+        Assert.DoesNotContain("Matches: 1\n", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task OutputFileMatchesConsoleReport()
+    {
+        using var temp = new TempDirectory();
+        var output = temp.File("report.txt");
+
+        var result = await RunAsync(
+            "search", TestAssembly, "EstimateTarget", "--kind", "method", "--match", "exact", "--symbols", "off",
+            "--output", output);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(result.StandardOutput, File.ReadAllText(output));
+        Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
     }
 
     private static async Task<ProcessResult> RunAsync(params string[] arguments)
@@ -181,12 +199,28 @@ public sealed class CliProcessTests
             startInfo.ArgumentList.Add(argument);
         }
 
+        startInfo.Environment["DOTNET_NOLOGO"] = "1";
+        startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("dotnetを起動できませんでした。");
         var standardOutput = process.StandardOutput.ReadToEndAsync();
         var standardError = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        using var timeout = new CancellationTokenSource(ProcessTimeout);
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException(
+                $"cecil-inspector が{ProcessTimeout.TotalSeconds:0}秒以内に終了しませんでした: {string.Join(' ', arguments)}");
+        }
+
         return new ProcessResult(process.ExitCode, await standardOutput, await standardError);
     }
+
+    private static readonly TimeSpan ProcessTimeout = TimeSpan.FromSeconds(60);
 
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 }

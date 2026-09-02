@@ -25,7 +25,16 @@ internal static class CecilModuleReader
 
         try
         {
-            var module = ReadCore(filePath, true, symbolMode == SymbolMode.Required, resolver);
+            ModuleDefinition module;
+            try
+            {
+                module = ReadCore(filePath, true, symbolMode == SymbolMode.Required, resolver);
+            }
+            catch (SymbolsNotFoundException) when (symbolMode == SymbolMode.Required)
+            {
+                throw new SymbolsNotFoundException($"PDBが見つかりません: {filePath}");
+            }
+
             if (symbolMode == SymbolMode.Required && !module.HasSymbols)
             {
                 module.Dispose();

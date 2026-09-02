@@ -35,7 +35,8 @@ internal static class TextSanitizer
             }
 
             if (category is not (UnicodeCategory.Control or UnicodeCategory.Format or
-                UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator))
+                UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator or
+                UnicodeCategory.Surrogate))
             {
                 escaped?.Append(value, index, length);
                 index += length;

@@ -11,282 +11,223 @@ public sealed class ResolverIntegrationTests
     [Fact]
     public void ResolvesPropertySemanticsAcrossSiblingDirectories()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var app = Path.Combine(root, "app");
         var lib = Path.Combine(root, "lib");
         Directory.CreateDirectory(app);
         Directory.CreateDirectory(lib);
-        try
-        {
-            CreateModelAssembly(Path.Combine(lib, "Model.dll"), "FetchValue", "Logical");
-            CreateCallerAssembly(Path.Combine(app, "Caller.dll"), "FetchValue");
+        CreateModelAssembly(Path.Combine(lib, "Model.dll"), "FetchValue", "Logical");
+        CreateCallerAssembly(Path.Combine(app, "Caller.dll"), "FetchValue");
 
-            var options = new SearchOptions(
-                root,
-                "Logical",
-                SearchKinds.Property,
-                SearchScope.References,
-                MatchMode.Exact,
-                true,
-                true,
-                SymbolMode.Off,
-                100,
-                null,
-                []);
+        var options = new SearchOptions(
+            root,
+            "Logical",
+            SearchKinds.Property,
+            SearchScope.References,
+            MatchMode.Exact,
+            true,
+            true,
+            SymbolMode.Off,
+            100,
+            null,
+            []);
 
-            var result = new AssemblySearcher().Search(options);
+        var result = new AssemblySearcher().Search(options);
 
-            var hit = Assert.Single(result.Hits);
-            Assert.Equal(HitKind.Property, hit.Kind);
-            Assert.Contains("::Logical", hit.Symbol, StringComparison.Ordinal);
-            Assert.DoesNotContain("FetchValue", hit.Symbol, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(HitKind.Property, hit.Kind);
+        Assert.Contains("::Logical", hit.Symbol, StringComparison.Ordinal);
+        Assert.DoesNotContain("FetchValue", hit.Symbol, StringComparison.Ordinal);
     }
 
     [Fact]
     public void PrefersDependencyNextToTargetOverEarlierSiblingDirectory()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var earlier = Path.Combine(root, "0-other");
         var app = Path.Combine(root, "z-app");
         Directory.CreateDirectory(earlier);
         Directory.CreateDirectory(app);
-        try
-        {
-            CreateModelAssembly(Path.Combine(earlier, "Model.dll"), "FetchValue", null);
-            CreateModelAssembly(Path.Combine(app, "Model.dll"), "FetchValue", "Logical");
-            CreateCallerAssembly(Path.Combine(app, "Caller.dll"), "FetchValue");
+        CreateModelAssembly(Path.Combine(earlier, "Model.dll"), "FetchValue", null);
+        CreateModelAssembly(Path.Combine(app, "Model.dll"), "FetchValue", "Logical");
+        CreateCallerAssembly(Path.Combine(app, "Caller.dll"), "FetchValue");
 
-            var options = new SearchOptions(
-                root,
-                "Logical",
-                SearchKinds.Property,
-                SearchScope.References,
-                MatchMode.Exact,
-                true,
-                true,
-                SymbolMode.Off,
-                100,
-                null,
-                []);
+        var options = new SearchOptions(
+            root,
+            "Logical",
+            SearchKinds.Property,
+            SearchScope.References,
+            MatchMode.Exact,
+            true,
+            true,
+            SymbolMode.Off,
+            100,
+            null,
+            []);
 
-            var result = new AssemblySearcher().Search(options);
+        var result = new AssemblySearcher().Search(options);
 
-            var hit = Assert.Single(result.Hits);
-            Assert.Equal(Path.Combine(app, "Caller.dll"), hit.AssemblyPath);
-            Assert.Equal(HitKind.Property, hit.Kind);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(Path.Combine(app, "Caller.dll"), hit.AssemblyPath);
+        Assert.Equal(HitKind.Property, hit.Kind);
     }
 
     [Fact]
     public void MissingDependencyIsReportedWhenMemberSemanticsCannotBeResolved()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var caller = Path.Combine(root, "Caller.dll");
-        try
-        {
-            CreateCallerAssembly(caller, "FetchValue");
-            var options = new SearchOptions(
-                caller,
-                "Logical",
-                SearchKinds.Property,
-                SearchScope.References,
-                MatchMode.Exact,
-                true,
-                true,
-                SymbolMode.Off,
-                100,
-                null,
-                []);
+        CreateCallerAssembly(caller, "FetchValue");
+        var options = new SearchOptions(
+            caller,
+            "Logical",
+            SearchKinds.Property,
+            SearchScope.References,
+            MatchMode.Exact,
+            true,
+            true,
+            SymbolMode.Off,
+            100,
+            null,
+            []);
 
-            var result = new AssemblySearcher().Search(options);
+        var result = new AssemblySearcher().Search(options);
 
-            // "FetchValue" carries no accessor prefix, so without MethodSemantics nothing can
-            // classify it as a property; the unresolved-accessor fallback does not apply.
-            Assert.Empty(result.Hits);
-            Assert.Equal(1, result.FilesSucceeded);
-            var error = Assert.Single(result.Errors);
-            Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
-            Assert.Contains("Model", error.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        // "FetchValue" carries no accessor prefix, so without MethodSemantics nothing can
+        // classify it as a property; the unresolved-accessor fallback does not apply.
+        Assert.Empty(result.Hits);
+        Assert.Equal(1, result.FilesSucceeded);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
+        Assert.Contains("Model", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public void SkipsAdjacentWrongVersionAndResolvesMatchingReferencePathAssembly()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var app = Path.Combine(root, "app");
         var reference = Path.Combine(root, "reference");
         Directory.CreateDirectory(app);
         Directory.CreateDirectory(reference);
-        try
-        {
-            CreateModelAssembly(
-                Path.Combine(app, "Model.dll"), "FetchValue", null, new Version(1, 0, 0, 0));
-            CreateModelAssembly(
-                Path.Combine(reference, "Model.dll"), "FetchValue", "Logical", new Version(2, 0, 0, 0));
-            var caller = Path.Combine(app, "Caller.dll");
-            CreateCallerAssembly(caller, "FetchValue", new Version(2, 0, 0, 0));
+        CreateModelAssembly(
+            Path.Combine(app, "Model.dll"), "FetchValue", null, new Version(1, 0, 0, 0));
+        CreateModelAssembly(
+            Path.Combine(reference, "Model.dll"), "FetchValue", "Logical", new Version(2, 0, 0, 0));
+        var caller = Path.Combine(app, "Caller.dll");
+        CreateCallerAssembly(caller, "FetchValue", new Version(2, 0, 0, 0));
 
-            var options = new SearchOptions(
-                caller,
-                "Logical",
-                SearchKinds.Property,
-                SearchScope.References,
-                MatchMode.Exact,
-                true,
-                true,
-                SymbolMode.Off,
-                100,
-                null,
-                [reference]);
+        var options = new SearchOptions(
+            caller,
+            "Logical",
+            SearchKinds.Property,
+            SearchScope.References,
+            MatchMode.Exact,
+            true,
+            true,
+            SymbolMode.Off,
+            100,
+            null,
+            [reference]);
 
-            var result = new AssemblySearcher().Search(options);
+        var result = new AssemblySearcher().Search(options);
 
-            var hit = Assert.Single(result.Hits);
-            Assert.Equal(HitKind.Property, hit.Kind);
-            Assert.Empty(result.Errors);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(HitKind.Property, hit.Kind);
+        Assert.Empty(result.Errors);
     }
 
     [Fact]
     public void UnresolvableGetAccessorYieldsMethodAndPropertyCandidates()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var caller = Path.Combine(root, "Caller.dll");
-        try
-        {
-            CreateCallerAssembly(caller, "get_Logical");
+        CreateCallerAssembly(caller, "get_Logical");
 
-            var property = Search(caller, "Logical", SearchKinds.Property);
-            var propertyHit = Assert.Single(property.Hits);
-            Assert.Equal(HitKind.Property, propertyHit.Kind);
-            Assert.Equal("Fixtures.Model::Logical : System.Int32", propertyHit.Symbol);
+        var property = Search(caller, "Logical", SearchKinds.Property);
+        var propertyHit = Assert.Single(property.Hits);
+        Assert.Equal(HitKind.Property, propertyHit.Kind);
+        Assert.Equal("Fixtures.Model::Logical : System.Int32", propertyHit.Symbol);
 
-            var method = Search(caller, "get_Logical", SearchKinds.Method);
-            var methodHit = Assert.Single(method.Hits);
-            Assert.Equal(HitKind.Method, methodHit.Kind);
+        var method = Search(caller, "get_Logical", SearchKinds.Method);
+        var methodHit = Assert.Single(method.Hits);
+        Assert.Equal(HitKind.Method, methodHit.Kind);
 
-            var all = Search(caller, "Logical", SearchKinds.All, MatchMode.Contains);
-            Assert.Equal(2, all.Hits.Count);
-            Assert.Contains(all.Hits, hit => hit.Kind == HitKind.Method);
-            Assert.Contains(all.Hits, hit => hit.Kind == HitKind.Property);
-            var error = Assert.Single(all.Errors);
-            Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        var all = Search(caller, "Logical", SearchKinds.All, MatchMode.Contains);
+        Assert.Equal(2, all.Hits.Count);
+        Assert.Contains(all.Hits, hit => hit.Kind == HitKind.Method);
+        Assert.Contains(all.Hits, hit => hit.Kind == HitKind.Property);
+        var error = Assert.Single(all.Errors);
+        Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public void UnresolvableAddAccessorYieldsEventCandidate()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var caller = Path.Combine(root, "Caller.dll");
-        try
-        {
-            CreateCallerAssembly(caller, "add_Changed", handlerParameter: true);
+        CreateCallerAssembly(caller, "add_Changed", handlerParameter: true);
 
-            var result = Search(caller, "Changed", SearchKinds.Event);
+        var result = Search(caller, "Changed", SearchKinds.Event);
 
-            var hit = Assert.Single(result.Hits);
-            Assert.Equal(HitKind.Event, hit.Kind);
-            Assert.Equal("Fixtures.Model::Changed : System.EventHandler", hit.Symbol);
-            Assert.Empty(Search(caller, "Changed", SearchKinds.Property).Hits);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(HitKind.Event, hit.Kind);
+        Assert.Equal("Fixtures.Model::Changed : System.EventHandler", hit.Symbol);
+        Assert.Empty(Search(caller, "Changed", SearchKinds.Property).Hits);
     }
 
     [Fact]
     public void UnresolvedMembersAreAggregatedPerDependency()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var caller = Path.Combine(root, "Caller.dll");
-        try
-        {
-            CreateCallerAssembly(caller, "get_Logical", secondGetterName: "get_Other");
+        CreateCallerAssembly(caller, "get_Logical", secondGetterName: "get_Other");
 
-            var result = Search(caller, "Nothing", SearchKinds.All, MatchMode.Contains);
+        var result = Search(caller, "Nothing", SearchKinds.All, MatchMode.Contains);
 
-            var error = Assert.Single(result.Errors);
-            Assert.Contains("Model", error.Message, StringComparison.Ordinal);
-            Assert.Contains("2 件", error.Message, StringComparison.Ordinal);
-            Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("Model", error.Message, StringComparison.Ordinal);
+        Assert.Contains("2 件", error.Message, StringComparison.Ordinal);
+        Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public void FailedResolutionIsNotProbedAgain()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        try
-        {
-            using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [], [root]);
-            var missing = new AssemblyNameReference("DoesNotExist", new Version(1, 0, 0, 0));
+        using var temp = new TempDirectory();
+        var root = temp.Path;
+        using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [], [root]);
+        var missing = new AssemblyNameReference("DoesNotExist", new Version(1, 0, 0, 0));
 
-            Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(missing));
-            var probesAfterFirstAttempt = resolver.ProbeCount;
-            Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(missing));
+        Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(missing));
+        var probesAfterFirstAttempt = resolver.ProbeCount;
+        Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(missing));
 
-            Assert.True(probesAfterFirstAttempt > 0);
-            Assert.Equal(probesAfterFirstAttempt, resolver.ProbeCount);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        Assert.True(probesAfterFirstAttempt > 0);
+        Assert.Equal(probesAfterFirstAttempt, resolver.ProbeCount);
     }
 
     [Fact]
     public void SearchDirectoriesExcludeCecilRelativeDefaults()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        using var temp = new TempDirectory();
+        var root = temp.Path;
         var reference = Path.Combine(root, "reference");
         Directory.CreateDirectory(reference);
-        try
-        {
-            using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [reference], [root]);
+        using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [reference], [root]);
 
-            var directories = resolver.GetSearchDirectories();
+        var directories = resolver.GetSearchDirectories();
 
-            Assert.Equal([root, reference], directories);
-            Assert.DoesNotContain(".", directories);
-            Assert.DoesNotContain("bin", directories);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
+        Assert.Equal([root, reference], directories);
+        Assert.DoesNotContain(".", directories);
+        Assert.DoesNotContain("bin", directories);
     }
 
     private static SearchResult Search(
