@@ -593,6 +593,41 @@ public sealed class AssemblySearcherTests
     }
 
     [Fact]
+    public void MaxResultsAppliesAcrossFilesWhileTotalsCountEverything()
+    {
+        using var temp = new TempDirectory();
+        File.Copy(ThisAssembly, temp.File("First.dll"));
+        File.Copy(ThisAssembly, temp.File("Second.dll"));
+        var single = Search("Estimate", SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains);
+        var options = Options("Estimate", SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains) with
+        {
+            InputPath = temp.Path,
+            SymbolMode = SymbolMode.Off,
+            MaxResults = single.TotalMatches + 1,
+        };
+
+        var result = new AssemblySearcher().Search(options);
+
+        // Both files match; the retained hits stop one into the second file, the totals do not.
+        Assert.Equal(2, result.FilesSucceeded);
+        Assert.Equal(single.TotalMatches * 2, result.TotalMatches);
+        Assert.Equal(single.TotalMatches + 1, result.Hits.Count);
+        Assert.Equal(single.TotalMatches, result.Hits.Count(hit => hit.AssemblyPath == temp.File("First.dll")));
+        Assert.Single(result.Hits, hit => hit.AssemblyPath == temp.File("Second.dll"));
+    }
+
+    [Fact]
+    public void NamespaceDefinitionIsReportedOncePerModule()
+    {
+        var result = Search("CecilInspector.Tests", SearchKinds.Namespace, SearchScope.Definitions, MatchMode.Exact);
+
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(HitKind.Namespace, hit.Kind);
+        Assert.Equal("CecilInspector.Tests", hit.Symbol);
+        Assert.Null(hit.Location);
+    }
+
+    [Fact]
     public void RequiredSymbolsReportsMissingPdb()
     {
         using var temp = new TempDirectory();
