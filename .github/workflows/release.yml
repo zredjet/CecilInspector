@@ -38,9 +38,14 @@ jobs:
           ls -l dist
       - name: Smoke test the published binary
         shell: bash
+        # The single-file bundle is a native host, not a managed PE, so search the test
+        # assembly built above rather than the executable itself.
         run: |
-          "publish/$ARTIFACT/cecil-inspector.exe" --version
-          "publish/$ARTIFACT/cecil-inspector.exe" search "publish/$ARTIFACT/cecil-inspector.exe" Search --kind type --symbols off | head -5
+          EXE="publish/$ARTIFACT/cecil-inspector.exe"
+          "$EXE" --version | grep -F "cecil-inspector $VERSION"
+          "$EXE" search tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll EstimateTarget \
+            --kind method --match exact --symbols off > smoke.txt
+          grep -F "Matches: 1" smoke.txt
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT }}
