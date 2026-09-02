@@ -169,7 +169,7 @@ public sealed class CliProcessTests
             new Regex(@"^.+\(\d+,\d+\): info CI0001: \[definition/method\] ", RegexOptions.Multiline),
             result.StandardOutput);
         Assert.Matches(
-            new Regex(@"^.+\(\d+,\d+\): info CI0002: \[reference/method\] .* \(in .*\) @ IL_[0-9A-F]{4}$", RegexOptions.Multiline),
+            new Regex(@"^.+\(\d+,\d+\): info CI0002: \[reference/method\] .* \(in .*\) @ IL_[0-9A-F]{4}\r?$", RegexOptions.Multiline),
             result.StandardOutput);
         Assert.DoesNotContain("  source:", result.StandardOutput, StringComparison.Ordinal);
     }
