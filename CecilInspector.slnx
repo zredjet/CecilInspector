@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/CecilInspector/CecilInspector.csproj" />
+  <Project Path="tests/CecilInspector.Tests/CecilInspector.Tests.csproj" />
+</Solution>

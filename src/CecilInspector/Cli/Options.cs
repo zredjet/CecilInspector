@@ -1,0 +1,66 @@
+namespace CecilInspector.Cli;
+
+[Flags]
+public enum SearchKinds
+{
+    None = 0,
+    Namespace = 1 << 0,
+    Type = 1 << 1,
+    Method = 1 << 2,
+    Property = 1 << 3,
+    Field = 1 << 4,
+    Event = 1 << 5,
+    All = Namespace | Type | Method | Property | Field | Event,
+}
+
+public enum SearchScope
+{
+    Definitions,
+    References,
+    All,
+}
+
+public enum MatchMode
+{
+    Contains,
+    Exact,
+    Regex,
+}
+
+public enum SymbolMode
+{
+    Auto,
+    Off,
+    Required,
+}
+
+public abstract record AppOptions(string InputPath, bool Recursive, string? OutputPath);
+
+public sealed record SearchOptions(
+    string InputPath,
+    string Query,
+    SearchKinds Kinds,
+    SearchScope Scope,
+    MatchMode MatchMode,
+    bool IgnoreCase,
+    bool Recursive,
+    SymbolMode SymbolMode,
+    int MaxResults,
+    string? OutputPath,
+    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath);
+
+public sealed record DumpOptions(
+    string InputPath,
+    bool Recursive,
+    bool IncludeIl,
+    SymbolMode SymbolMode,
+    string? OutputPath,
+    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath);
+
+public sealed record ParseResult(AppOptions? Options, string? Error)
+{
+    public bool IsSuccess => Options is not null;
+
+    public static ParseResult Success(AppOptions options) => new(options, null);
+    public static ParseResult Failure(string? error) => new(null, error);
+}
