@@ -7,6 +7,9 @@ namespace CecilInspector.Core;
 
 public sealed class MetadataDumper
 {
+    public DumpResult Dump(DumpOptions options, AssemblyDiscoveryResult discovery, TextWriter writer) =>
+        Dump(options, discovery.Files, discovery.FileCount, discovery.SearchDirectories, discovery.Errors, writer);
+
     public DumpResult Dump(
         DumpOptions options,
         IEnumerable<string> files,
@@ -15,10 +18,10 @@ public sealed class MetadataDumper
         IReadOnlyList<ScanError> discoveryErrors,
         TextWriter writer)
     {
+        var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
         writer = new GuardedTextWriter(writer);
         var errors = new List<ScanError>(discoveryErrors);
         var succeeded = 0;
-        var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
 
         foreach (var file in files)
         {

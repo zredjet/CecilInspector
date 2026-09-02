@@ -96,6 +96,53 @@ public sealed class CliProcessTests
         Assert.Contains("タイムアウト", result.StandardError, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("search")]
+    [InlineData("dump")]
+    public async Task InvalidReferencePathIsRejectedBeforeOutputIsCreated(string command)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var output = Path.Combine(directory, "out", "report.txt");
+            var missing = Path.Combine(directory, "missing");
+            string[] positional = command == "search" ? ["search", TestAssembly, "Estimate"] : ["dump", TestAssembly];
+
+            var result = await RunAsync([
+                .. positional, "--symbols", "off", "--output", output, "--reference-path", missing]);
+
+            Assert.Equal(2, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.Contains("依存アセンブリの検索フォルダ", result.StandardError, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(Path.Combine(directory, "out")));
+            Assert.Empty(Directory.GetFiles(directory, "*.partial", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task ExistingOutputIsRejectedBeforeSearching()
+    {
+        var existing = Path.GetTempFileName();
+        try
+        {
+            var result = await RunAsync(
+                "search", TestAssembly, "Estimate", "--symbols", "off", "--output", existing);
+
+            Assert.Equal(2, result.ExitCode);
+            Assert.Empty(result.StandardOutput);
+            Assert.Contains("出力先は既に存在します", result.StandardError, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(existing);
+        }
+    }
+
     private static async Task<ProcessResult> RunAsync(params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("dotnet")

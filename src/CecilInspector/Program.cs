@@ -19,39 +19,43 @@ if (!parseResult.IsSuccess)
 
 try
 {
-    switch (parseResult.Options)
+    var options = parseResult.Options!;
+
+    // Preflight: everything that can reject the invocation runs before the first side effect
+    // (creating the report file) and before any long-running analysis, so a bad --output or
+    // --reference-path fails immediately instead of after a full scan.
+    var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive);
+    CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
+    using var reportFile = OutputFile.OpenAtomic(options.OutputPath);
+    var writer = reportFile is null ? Console.Out : new TeeTextWriter(Console.Out, reportFile.Writer);
+
+    IReadOnlyList<ScanError> errors;
+    int filesSucceeded;
+    switch (options)
     {
-        case SearchOptions options:
+        case SearchOptions searchOptions:
             {
-                var result = new AssemblySearcher().Search(options);
-                using var reportFile = OutputFile.OpenAtomic(options.OutputPath);
-                var writer = reportFile is null ? Console.Out : new TeeTextWriter(Console.Out, reportFile.Writer);
-                TextReport.WriteSearch(writer, result, options);
-                writer.Flush();
-                reportFile?.Commit();
-                WriteDiagnostics(result.Errors);
-                return ExitCode(result.FilesSucceeded, result.Errors.Count);
+                var result = new AssemblySearcher().Search(searchOptions, discovery);
+                TextReport.WriteSearch(writer, result, searchOptions);
+                errors = result.Errors;
+                filesSucceeded = result.FilesSucceeded;
+                break;
             }
-        case DumpOptions options:
+        case DumpOptions dumpOptions:
             {
-                var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive);
-                using var reportFile = OutputFile.OpenAtomic(options.OutputPath);
-                var writer = reportFile is null ? Console.Out : new TeeTextWriter(Console.Out, reportFile.Writer);
-                var result = new MetadataDumper().Dump(
-                    options,
-                    discovery.Files,
-                    discovery.FileCount,
-                    discovery.SearchDirectories,
-                    discovery.Errors,
-                    writer);
-                writer.Flush();
-                reportFile?.Commit();
-                WriteDiagnostics(result.Errors);
-                return ExitCode(result.FilesSucceeded, result.Errors.Count);
+                var result = new MetadataDumper().Dump(dumpOptions, discovery, writer);
+                errors = result.Errors;
+                filesSucceeded = result.FilesSucceeded;
+                break;
             }
         default:
             throw new InvalidOperationException("未対応のコマンドです。");
     }
+
+    writer.Flush();
+    reportFile?.Commit();
+    WriteDiagnostics(errors);
+    return ExitCode(filesSucceeded, errors.Count);
 }
 catch (SearchQueryException ex)
 {

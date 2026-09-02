@@ -34,7 +34,11 @@ public enum SymbolMode
     Required,
 }
 
-public abstract record AppOptions(string InputPath, bool Recursive, string? OutputPath);
+public abstract record AppOptions(
+    string InputPath,
+    bool Recursive,
+    string? OutputPath,
+    IReadOnlyList<string> ReferencePaths);
 
 public sealed record SearchOptions(
     string InputPath,
@@ -47,7 +51,7 @@ public sealed record SearchOptions(
     SymbolMode SymbolMode,
     int MaxResults,
     string? OutputPath,
-    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath);
+    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
 
 public sealed record DumpOptions(
     string InputPath,
@@ -55,7 +59,7 @@ public sealed record DumpOptions(
     bool IncludeIl,
     SymbolMode SymbolMode,
     string? OutputPath,
-    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath);
+    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
 
 public sealed record ParseResult(AppOptions? Options, string? Error)
 {

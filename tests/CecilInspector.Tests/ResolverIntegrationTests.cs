@@ -110,6 +110,8 @@ public sealed class ResolverIntegrationTests
 
             var result = new AssemblySearcher().Search(options);
 
+            // "FetchValue" carries no accessor prefix, so without MethodSemantics nothing can
+            // classify it as a property; the unresolved-accessor fallback does not apply.
             Assert.Empty(result.Hits);
             Assert.Equal(1, result.FilesSucceeded);
             var error = Assert.Single(result.Errors);
@@ -164,6 +166,69 @@ public sealed class ResolverIntegrationTests
         }
     }
 
+    [Fact]
+    public void UnresolvableGetAccessorYieldsMethodAndPropertyCandidates()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var caller = Path.Combine(root, "Caller.dll");
+        try
+        {
+            CreateCallerAssembly(caller, "get_Logical");
+
+            var property = Search(caller, "Logical", SearchKinds.Property);
+            var propertyHit = Assert.Single(property.Hits);
+            Assert.Equal(HitKind.Property, propertyHit.Kind);
+            Assert.Equal("Fixtures.Model::Logical : System.Int32", propertyHit.Symbol);
+
+            var method = Search(caller, "get_Logical", SearchKinds.Method);
+            var methodHit = Assert.Single(method.Hits);
+            Assert.Equal(HitKind.Method, methodHit.Kind);
+
+            var all = Search(caller, "Logical", SearchKinds.All, MatchMode.Contains);
+            Assert.Equal(2, all.Hits.Count);
+            Assert.Contains(all.Hits, hit => hit.Kind == HitKind.Method);
+            Assert.Contains(all.Hits, hit => hit.Kind == HitKind.Property);
+            var error = Assert.Single(all.Errors);
+            Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void UnresolvableAddAccessorYieldsEventCandidate()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var caller = Path.Combine(root, "Caller.dll");
+        try
+        {
+            CreateCallerAssembly(caller, "add_Changed", handlerParameter: true);
+
+            var result = Search(caller, "Changed", SearchKinds.Event);
+
+            var hit = Assert.Single(result.Hits);
+            Assert.Equal(HitKind.Event, hit.Kind);
+            Assert.Equal("Fixtures.Model::Changed : System.EventHandler", hit.Symbol);
+            Assert.Empty(Search(caller, "Changed", SearchKinds.Property).Hits);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    private static SearchResult Search(
+        string input,
+        string query,
+        SearchKinds kinds,
+        MatchMode match = MatchMode.Exact) =>
+        new AssemblySearcher().Search(new SearchOptions(
+            input, query, kinds, SearchScope.References, match, true, true, SymbolMode.Off, 100, null, []));
+
     private static void CreateModelAssembly(
         string path,
         string getterName,
@@ -197,7 +262,11 @@ public sealed class ResolverIntegrationTests
         assembly.Write(path);
     }
 
-    private static void CreateCallerAssembly(string path, string getterName, Version? modelVersion = null)
+    private static void CreateCallerAssembly(
+        string path,
+        string getterName,
+        Version? modelVersion = null,
+        bool handlerParameter = false)
     {
         using var assembly = AssemblyDefinition.CreateAssembly(
             new AssemblyNameDefinition("Caller", new Version(1, 0, 0, 0)),
@@ -209,10 +278,17 @@ public sealed class ResolverIntegrationTests
             modelVersion ?? new Version(1, 0, 0, 0));
         module.AssemblyReferences.Add(modelAssembly);
         var modelType = new TypeReference("Fixtures", "Model", module, modelAssembly);
-        var getter = new MethodReference(getterName, module.TypeSystem.Int32, modelType)
+        var getter = new MethodReference(
+            getterName,
+            handlerParameter ? module.TypeSystem.Void : module.TypeSystem.Int32,
+            modelType)
         {
             HasThis = true,
         };
+        if (handlerParameter)
+        {
+            getter.Parameters.Add(new ParameterDefinition(module.ImportReference(typeof(EventHandler))));
+        }
 
         var type = new TypeDefinition("Fixtures", "Caller", TypeAttributes.Public | TypeAttributes.Class);
         module.Types.Add(type);
@@ -221,7 +297,17 @@ public sealed class ResolverIntegrationTests
             MethodAttributes.Public | MethodAttributes.Static,
             module.TypeSystem.Int32);
         method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+        if (handlerParameter)
+        {
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+        }
+
         method.Body.Instructions.Add(Instruction.Create(OpCodes.Callvirt, getter));
+        if (handlerParameter)
+        {
+            method.Body.Instructions.Add(Instruction.Create(OpCodes.Ldc_I4_0));
+        }
+
         method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
         type.Methods.Add(method);
         assembly.Write(path);

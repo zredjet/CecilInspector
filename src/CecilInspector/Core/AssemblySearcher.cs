@@ -9,9 +9,16 @@ public sealed class AssemblySearcher
 {
     private static readonly ConditionalWeakTable<TypeDefinition, AccessorMap> AccessorMaps = new();
 
-    public SearchResult Search(SearchOptions options)
+    public SearchResult Search(SearchOptions options) =>
+        Search(options, AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive));
+
+    /// <summary>
+    /// Searches an already discovered input. Callers that need to validate every option before
+    /// any long-running work (the CLI) discover and validate up front, then pass the result here.
+    /// </summary>
+    public SearchResult Search(SearchOptions options, AssemblyDiscoveryResult discovery)
     {
-        var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive);
+        var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
         var files = discovery.Files;
         var matcher = new SearchMatcher(options);
         var hits = new SearchHitCollector(options.MaxResults);
@@ -19,7 +26,6 @@ public sealed class AssemblySearcher
         var resolutionDiagnostics = new ResolutionDiagnostics(errors);
         var succeeded = 0;
         var withSymbols = 0;
-        var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
         var symbolMode = EffectiveSymbolMode(options);
 
         foreach (var file in files)
@@ -478,7 +484,48 @@ public sealed class AssemblySearcher
             diagnostics.Add(file, method, ex);
         }
 
-        return options.Kinds.Includes(HitKind.Method) ? [MethodCandidate(method, method.Name)] : [];
+        return UnresolvedCandidates(method, options);
+    }
+
+    /// <summary>
+    /// Candidates for a reference whose definition cannot be resolved. Without MethodSemantics
+    /// an accessor-looking name (get_/set_/add_/remove_/raise_) cannot be classified, so it is
+    /// reported both as an ordinary method and as the property/event it most likely belongs to,
+    /// which avoids false negatives when the dependency is missing.
+    /// </summary>
+    private static IReadOnlyList<MemberCandidate> UnresolvedCandidates(MethodReference method, SearchOptions options)
+    {
+        var candidates = new List<MemberCandidate>(2);
+        if (options.Kinds.Includes(HitKind.Method))
+        {
+            candidates.Add(MethodCandidate(method, method.Name));
+        }
+
+        if (options.Kinds.Includes(HitKind.Property) && CecilFormatting.IsPropertyAccessorName(method.Name))
+        {
+            var logicalName = CecilFormatting.LogicalMemberName(method.Name);
+            candidates.Add(new MemberCandidate(
+                HitKind.Property,
+                method.Name,
+                logicalName,
+                CecilFormatting.MemberName(method.DeclaringType, method.Name),
+                CecilFormatting.MemberName(method.DeclaringType, logicalName),
+                CecilFormatting.Property(method)));
+        }
+
+        if (options.Kinds.Includes(HitKind.Event) && CecilFormatting.IsEventAccessorName(method.Name))
+        {
+            var logicalName = CecilFormatting.LogicalMemberName(method.Name);
+            candidates.Add(new MemberCandidate(
+                HitKind.Event,
+                method.Name,
+                logicalName,
+                CecilFormatting.MemberName(method.DeclaringType, method.Name),
+                CecilFormatting.MemberName(method.DeclaringType, logicalName),
+                CecilFormatting.Event(method)));
+        }
+
+        return candidates;
     }
 
     private static MemberCandidate MethodCandidate(MethodReference method, string logicalName)
