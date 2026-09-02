@@ -73,13 +73,99 @@ public sealed class CommandLineTests
 
     [Theory]
     [InlineData("--scope", "99")]
+    [InlineData("--scope", "0")]
     [InlineData("--match", "99")]
+    [InlineData("--match", "2")]
     [InlineData("--symbols", "99")]
+    [InlineData("--symbols", "1")]
     [InlineData("--kind", "64")]
+    [InlineData("--kind", "1,2")]
     public void RejectsNumericEnumValues(string option, string value)
     {
         var result = CommandLine.Parse(["search", "a.dll", "Save", option, value]);
 
         Assert.False(result.IsSuccess);
+        Assert.Contains(option, result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DashPrefixedQueryIsRejectedWithoutSeparator()
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "--case-sensitive"]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("入力パスと検索文言が必要", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UnknownOptionHintsAtSeparator()
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "-Prefixed"]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("不明なオプション '-Prefixed'", result.Error, StringComparison.Ordinal);
+        Assert.Contains("'--'", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoubleDashAllowsDashPrefixedQuery()
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "--match", "exact", "--", "-Prefixed"]);
+
+        var options = Assert.IsType<SearchOptions>(result.Options);
+        Assert.Equal("-Prefixed", options.Query);
+        Assert.Equal(MatchMode.Exact, options.MatchMode);
+    }
+
+    [Fact]
+    public void OptionsMayPrecedePositionals()
+    {
+        var result = CommandLine.Parse(["search", "--kind", "method", "./bin", "Save"]);
+
+        var options = Assert.IsType<SearchOptions>(result.Options);
+        Assert.Equal("./bin", options.InputPath);
+        Assert.Equal("Save", options.Query);
+        Assert.Equal(SearchKinds.Method, options.Kinds);
+    }
+
+    [Theory]
+    [InlineData("search", "a.dll", "Save", "extra")]
+    [InlineData("dump", "a.dll", "extra")]
+    public void ExtraPositionalIsRejected(params string[] args)
+    {
+        var result = CommandLine.Parse(args);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("余分な引数 'extra'", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OutputValueMayBeNamedHelp()
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--output", "help"]);
+
+        var options = Assert.IsType<SearchOptions>(result.Options);
+        Assert.Equal("help", options.OutputPath);
+    }
+
+    [Theory]
+    [InlineData("HELP")]
+    [InlineData("--HELP")]
+    [InlineData("-H")]
+    public void HelpIsCaseInsensitive(string token)
+    {
+        Assert.Null(CommandLine.Parse([token]).Error);
+        Assert.Null(CommandLine.Parse(["search", token]).Error);
+    }
+
+    [Fact]
+    public void ParsesDumpOptions()
+    {
+        var result = CommandLine.Parse(["dump", "a.dll", "--include-il", "--no-recursive", "--symbols", "required"]);
+
+        var options = Assert.IsType<DumpOptions>(result.Options);
+        Assert.True(options.IncludeIl);
+        Assert.False(options.Recursive);
+        Assert.Equal(SymbolMode.Required, options.SymbolMode);
     }
 }

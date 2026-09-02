@@ -1,5 +1,5 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
+using CecilInspector.Core;
 
 namespace CecilInspector.Cli;
 
@@ -11,6 +11,9 @@ public static class CommandLine
         使用方法:
           cecil-inspector search <assembly-or-directory> <query> [options]
           cecil-inspector dump   <assembly-or-directory> [options]
+
+        オプションは位置引数の前後どちらにも置けます。'--' 以降はすべて位置引数として扱うので、
+        '-' で始まる検索文言は '--' の後に指定してください。
 
         search options:
           --kind <list>          namespace,type,method,property,field,event,all
@@ -34,12 +37,13 @@ public static class CommandLine
         例:
           cecil-inspector search ./bin CustomerService --kind type,method
           cecil-inspector search app.dll Save --kind method --scope all --match exact
+          cecil-inspector search app.dll -- -Prefixed --match exact
           cecil-inspector dump app.dll --include-il --output metadata.txt
         """;
 
     public static ParseResult Parse(string[] args)
     {
-        if (args.Length == 0 || args[0] is "help" or "--help" or "-h")
+        if (args.Length == 0 || IsHelpToken(args[0]))
         {
             return ParseResult.Failure(null);
         }
@@ -54,13 +58,6 @@ public static class CommandLine
 
     private static ParseResult ParseSearch(string[] args)
     {
-        if (args.Length < 3)
-        {
-            return ParseResult.Failure("searchには入力パスと検索文言が必要です。");
-        }
-
-        var input = args[1];
-        var query = args[2];
         var kinds = SearchKinds.All;
         var scope = SearchScope.Definitions;
         var matchMode = MatchMode.Contains;
@@ -71,33 +68,34 @@ public static class CommandLine
         string? output = null;
         var referencePaths = new List<string>();
 
-        for (var index = 3; index < args.Length; index++)
+        var reader = new ArgumentReader(args, 1);
+        while (reader.TryNextOption(out var option))
         {
-            switch (args[index])
+            switch (option)
             {
                 case "--kind" or "--kinds":
-                    if (!TryTakeValue(args, ref index, out var kindText) || !TryParseKinds(kindText, out kinds))
+                    if (!reader.TryTakeValue(out var kindText) || !TryParseKinds(kindText, out kinds))
                     {
                         return ParseResult.Failure("--kindには namespace,type,method,property,field,event,all を指定してください。");
                     }
 
                     break;
                 case "--scope":
-                    if (!TryTakeEnum(args, ref index, out scope))
+                    if (!reader.TryTakeEnum(out scope))
                     {
                         return ParseResult.Failure("--scopeには definitions, references, all を指定してください。");
                     }
 
                     break;
                 case "--match":
-                    if (!TryTakeEnum(args, ref index, out matchMode))
+                    if (!reader.TryTakeEnum(out matchMode))
                     {
                         return ParseResult.Failure("--matchには contains, exact, regex を指定してください。");
                     }
 
                     break;
                 case "--symbols":
-                    if (!TryTakeEnum(args, ref index, out symbolMode))
+                    if (!reader.TryTakeEnum(out symbolMode))
                     {
                         return ParseResult.Failure("--symbolsには auto, off, required を指定してください。");
                     }
@@ -110,7 +108,7 @@ public static class CommandLine
                     recursive = false;
                     break;
                 case "--max-results":
-                    if (!TryTakeValue(args, ref index, out var maxText) ||
+                    if (!reader.TryTakeValue(out var maxText) ||
                         !int.TryParse(maxText, NumberStyles.None, CultureInfo.InvariantCulture, out maxResults) ||
                         maxResults < 1)
                     {
@@ -119,14 +117,14 @@ public static class CommandLine
 
                     break;
                 case "--output" or "-o":
-                    if (!TryTakeValue(args, ref index, out output))
+                    if (!reader.TryTakeValue(out output))
                     {
                         return ParseResult.Failure("--outputにはファイルパスが必要です。");
                     }
 
                     break;
                 case "--reference-path":
-                    if (!TryTakeValue(args, ref index, out var referencePath))
+                    if (!reader.TryTakeValue(out var referencePath))
                     {
                         return ParseResult.Failure("--reference-pathにはフォルダパスが必要です。");
                     }
@@ -134,10 +132,23 @@ public static class CommandLine
                     referencePaths.Add(referencePath);
                     break;
                 default:
-                    return ParseResult.Failure($"不明なオプション '{args[index]}' です。");
+                    return ParseResult.Failure(
+                        $"不明なオプション '{option}' です。'-'で始まる検索文言は '--' の後に指定してください。");
             }
         }
 
+        if (reader.Positionals.Count < 2)
+        {
+            return ParseResult.Failure("searchには入力パスと検索文言が必要です。");
+        }
+
+        if (reader.Positionals.Count > 2)
+        {
+            return ParseResult.Failure($"余分な引数 '{reader.Positionals[2]}' です。");
+        }
+
+        var input = reader.Positionals[0];
+        var query = reader.Positionals[1];
         if (string.IsNullOrEmpty(query))
         {
             return ParseResult.Failure("検索文言を空にはできません。");
@@ -145,15 +156,9 @@ public static class CommandLine
 
         if (matchMode == MatchMode.Regex)
         {
-            var regexOptions = RegexOptions.CultureInvariant;
-            if (ignoreCase)
-            {
-                regexOptions |= RegexOptions.IgnoreCase;
-            }
-
             try
             {
-                _ = new Regex(query, regexOptions, TimeSpan.FromMilliseconds(250));
+                _ = SearchRegex.Create(query, ignoreCase);
             }
             catch (ArgumentException ex)
             {
@@ -167,21 +172,16 @@ public static class CommandLine
 
     private static ParseResult ParseDump(string[] args)
     {
-        if (args.Length < 2)
-        {
-            return ParseResult.Failure("dumpには入力パスが必要です。");
-        }
-
-        var input = args[1];
         var recursive = true;
         var includeIl = false;
         var symbolMode = SymbolMode.Auto;
         string? output = null;
         var referencePaths = new List<string>();
 
-        for (var index = 2; index < args.Length; index++)
+        var reader = new ArgumentReader(args, 1);
+        while (reader.TryNextOption(out var option))
         {
-            switch (args[index])
+            switch (option)
             {
                 case "--include-il":
                     includeIl = true;
@@ -190,21 +190,21 @@ public static class CommandLine
                     recursive = false;
                     break;
                 case "--symbols":
-                    if (!TryTakeEnum(args, ref index, out symbolMode))
+                    if (!reader.TryTakeEnum(out symbolMode))
                     {
                         return ParseResult.Failure("--symbolsには auto, off, required を指定してください。");
                     }
 
                     break;
                 case "--output" or "-o":
-                    if (!TryTakeValue(args, ref index, out output))
+                    if (!reader.TryTakeValue(out output))
                     {
                         return ParseResult.Failure("--outputにはファイルパスが必要です。");
                     }
 
                     break;
                 case "--reference-path":
-                    if (!TryTakeValue(args, ref index, out var referencePath))
+                    if (!reader.TryTakeValue(out var referencePath))
                     {
                         return ParseResult.Failure("--reference-pathにはフォルダパスが必要です。");
                     }
@@ -212,11 +212,22 @@ public static class CommandLine
                     referencePaths.Add(referencePath);
                     break;
                 default:
-                    return ParseResult.Failure($"不明なオプション '{args[index]}' です。");
+                    return ParseResult.Failure($"不明なオプション '{option}' です。");
             }
         }
 
-        return ParseResult.Success(new DumpOptions(input, recursive, includeIl, symbolMode, output, referencePaths));
+        if (reader.Positionals.Count < 1)
+        {
+            return ParseResult.Failure("dumpには入力パスが必要です。");
+        }
+
+        if (reader.Positionals.Count > 1)
+        {
+            return ParseResult.Failure($"余分な引数 '{reader.Positionals[1]}' です。");
+        }
+
+        return ParseResult.Success(new DumpOptions(
+            reader.Positionals[0], recursive, includeIl, symbolMode, output, referencePaths));
     }
 
     private static bool TryParseKinds(string text, out SearchKinds kinds)
@@ -224,9 +235,7 @@ public static class CommandLine
         kinds = SearchKinds.None;
         foreach (var item in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (!Enum.TryParse<SearchKinds>(item, true, out var parsed) ||
-                !Enum.IsDefined(parsed) ||
-                parsed == SearchKinds.None)
+            if (!TryParseEnumName(item, out SearchKinds parsed) || parsed == SearchKinds.None)
             {
                 return false;
             }
@@ -237,30 +246,81 @@ public static class CommandLine
         return kinds != SearchKinds.None;
     }
 
-    private static bool TryTakeEnum<T>(string[] args, ref int index, out T value) where T : struct, Enum
+    /// <summary>
+    /// Parses an enum by name only. <see cref="Enum.TryParse{TEnum}(string, bool, out TEnum)"/> also
+    /// accepts numeric text, which is never what a user means on the command line.
+    /// </summary>
+    private static bool TryParseEnumName<T>(string text, out T value) where T : struct, Enum
     {
         value = default;
-        return TryTakeValue(args, ref index, out var text) &&
+        return text.Length > 0 &&
+               !char.IsAsciiDigit(text[0]) && text[0] is not ('-' or '+') &&
                Enum.TryParse(text, true, out value) &&
                Enum.IsDefined(value);
     }
 
-    private static bool TryTakeValue(string[] args, ref int index, out string value)
+    private static bool IsSubcommandHelp(string[] args) =>
+        args.Length == 2 && IsHelpToken(args[1]);
+
+    private static bool IsHelpToken(string value) =>
+        value.Equals("help", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("--help", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("-h", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Walks the arguments after the subcommand. Tokens starting with '-' are options, everything
+    /// else is positional, and a bare "--" makes every following token positional.
+    /// </summary>
+    private sealed class ArgumentReader(string[] args, int start)
     {
-        if (index + 1 >= args.Length || IsOptionToken(args[index + 1]))
+        private int _index = start;
+        private bool _afterSeparator;
+
+        public List<string> Positionals { get; } = [];
+
+        public bool TryNextOption(out string option)
         {
-            value = string.Empty;
+            while (_index < args.Length)
+            {
+                var token = args[_index++];
+                if (!_afterSeparator && token == "--")
+                {
+                    _afterSeparator = true;
+                    continue;
+                }
+
+                if (!_afterSeparator && IsOptionToken(token))
+                {
+                    option = token;
+                    return true;
+                }
+
+                Positionals.Add(token);
+            }
+
+            option = string.Empty;
             return false;
         }
 
-        index++;
-        value = args[index];
-        return true;
+        public bool TryTakeValue(out string value)
+        {
+            if (_index >= args.Length || IsOptionToken(args[_index]))
+            {
+                value = string.Empty;
+                return false;
+            }
+
+            value = args[_index++];
+            return true;
+        }
+
+        public bool TryTakeEnum<T>(out T value) where T : struct, Enum
+        {
+            value = default;
+            return TryTakeValue(out var text) && TryParseEnumName(text, out value);
+        }
+
+        private static bool IsOptionToken(string value) =>
+            value.StartsWith('-') && value != "--";
     }
-
-    private static bool IsSubcommandHelp(string[] args) =>
-        args.Length == 2 && args[1] is "help" or "--help" or "-h";
-
-    private static bool IsOptionToken(string value) =>
-        value.StartsWith("-", StringComparison.Ordinal) || value == "help";
 }

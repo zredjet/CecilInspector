@@ -13,15 +13,9 @@ internal sealed class SearchMatcher
         _options = options;
         if (options.MatchMode == MatchMode.Regex)
         {
-            var regexOptions = RegexOptions.CultureInvariant;
-            if (options.IgnoreCase)
-            {
-                regexOptions |= RegexOptions.IgnoreCase;
-            }
-
             try
             {
-                _regex = new Regex(options.Query, regexOptions, TimeSpan.FromMilliseconds(250));
+                _regex = SearchRegex.Create(options.Query, options.IgnoreCase);
             }
             catch (ArgumentException ex)
             {
@@ -65,7 +59,7 @@ internal sealed class SearchMatcher
         }
         catch (RegexMatchTimeoutException ex)
         {
-            throw new SearchQueryException("正規表現の照合が250ミリ秒でタイムアウトしました。パターンを簡略化してください。", ex);
+            throw new SearchQueryException(SearchRegex.TimeoutMessage, ex);
         }
     }
 }

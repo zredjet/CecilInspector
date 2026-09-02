@@ -63,12 +63,27 @@ public sealed class AssemblySearcherTests
     [Fact]
     public void RegexTimeoutIsReportedAsSearchQueryError()
     {
-        var options = Options("^(.+)+Z$", SearchKinds.Namespace, SearchScope.Definitions, MatchMode.Regex) with
+        // The lookahead is unsupported by the non-backtracking engine, which forces the
+        // timeout-guarded backtracking fallback that this test exercises.
+        var options = Options("^(?=.)(.+)+Z$", SearchKinds.Namespace, SearchScope.Definitions, MatchMode.Regex) with
         {
             SymbolMode = SymbolMode.Off,
         };
 
         Assert.Throws<SearchQueryException>(() => new AssemblySearcher().Search(options));
+    }
+
+    [Fact]
+    public void CatastrophicPatternCompletesUnderNonBacktrackingEngine()
+    {
+        var options = Options("^(.+)+Z$", SearchKinds.Namespace, SearchScope.Definitions, MatchMode.Regex) with
+        {
+            SymbolMode = SymbolMode.Off,
+        };
+
+        var result = new AssemblySearcher().Search(options);
+
+        Assert.Equal(0, result.TotalMatches);
     }
 
     [Fact]

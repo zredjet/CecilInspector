@@ -89,7 +89,7 @@ public sealed class CliProcessTests
     public async Task RegexTimeoutIsAnArgumentError()
     {
         var result = await RunAsync(
-            "search", TestAssembly, "^(.+)+Z$", "--kind", "namespace", "--match", "regex", "--symbols", "off");
+            "search", TestAssembly, "^(?=.)(.+)+Z$", "--kind", "namespace", "--match", "regex", "--symbols", "off");
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
