@@ -129,6 +129,7 @@ public sealed class AssemblySearcher
     {
         var assemblyName = module.Assembly?.Name.FullName ?? module.Name;
         var seenNamespaces = new HashSet<string>(StringComparer.Ordinal);
+        var scratch = new ReferenceScratch(file, options, resolutionDiagnostics);
         foreach (var type in AllTypes(module.Types))
         {
             if (options.Scope is SearchScope.Definitions or SearchScope.All)
@@ -138,7 +139,7 @@ public sealed class AssemblySearcher
 
             if (options.Scope is SearchScope.References or SearchScope.All)
             {
-                SearchReferences(type, file, assemblyName, options, matcher, hits, resolutionDiagnostics);
+                SearchReferences(type, file, assemblyName, options, matcher, hits, scratch);
             }
         }
     }
@@ -160,23 +161,22 @@ public sealed class AssemblySearcher
             Add(hits, file, assemblyName, HitScope.Definition, HitKind.Namespace, type.Namespace, null, null, null);
         }
 
-        if (options.Kinds.Includes(HitKind.Type))
+        // The declaring type renders identically for every member, so format it once per type.
+        var declaringType = CecilFormatting.Type(type);
+
+        if (options.Kinds.Includes(HitKind.Type) && matcher.IsMatch(type.Name, type.FullName, declaringType))
         {
-            var typeSymbol = CecilFormatting.Type(type);
-            if (matcher.IsMatch(type.Name, type.FullName, typeSymbol))
-            {
-                Add(hits, file, assemblyName, HitScope.Definition, HitKind.Type, typeSymbol, null, null, null);
-            }
+            Add(hits, file, assemblyName, HitScope.Definition, HitKind.Type, declaringType, null, null, null);
         }
 
         if (options.Kinds.Includes(HitKind.Field))
         {
             foreach (var field in type.Fields)
             {
-                var symbol = CecilFormatting.Field(field);
+                var symbol = CecilFormatting.Field(field, declaringType);
                 if (matcher.IsMatch(
                         field.Name,
-                        CecilFormatting.MemberName(field.DeclaringType, field.Name),
+                        CecilFormatting.MemberName(declaringType, field.Name),
                         field.FullName,
                         symbol))
                 {
@@ -189,13 +189,13 @@ public sealed class AssemblySearcher
         {
             foreach (var property in type.Properties)
             {
-                var symbol = CecilFormatting.Property(property);
+                var symbol = CecilFormatting.Property(property, declaringType);
                 var logicalName = PropertyLogicalName(property);
                 if (matcher.IsMatch(
                         property.Name,
                         logicalName,
-                        CecilFormatting.MemberName(property.DeclaringType, property.Name),
-                        CecilFormatting.MemberName(property.DeclaringType, logicalName),
+                        CecilFormatting.MemberName(declaringType, property.Name),
+                        LogicalMemberName(declaringType, property.Name, logicalName),
                         property.FullName,
                         symbol))
                 {
@@ -209,13 +209,13 @@ public sealed class AssemblySearcher
         {
             foreach (var @event in type.Events)
             {
-                var symbol = CecilFormatting.Event(@event);
+                var symbol = CecilFormatting.Event(@event, declaringType);
                 var logicalName = EventLogicalName(@event);
                 if (matcher.IsMatch(
                         @event.Name,
                         logicalName,
-                        CecilFormatting.MemberName(@event.DeclaringType, @event.Name),
-                        CecilFormatting.MemberName(@event.DeclaringType, logicalName),
+                        CecilFormatting.MemberName(declaringType, @event.Name),
+                        LogicalMemberName(declaringType, @event.Name, logicalName),
                         @event.FullName,
                         symbol))
                 {
@@ -229,13 +229,18 @@ public sealed class AssemblySearcher
         {
             foreach (var method in type.Methods)
             {
-                var symbol = CecilFormatting.Method(method);
+                if (IsPropertyOrEventAccessor(method))
+                {
+                    continue;
+                }
+
+                var symbol = CecilFormatting.Method(method, declaringType);
                 var logicalName = MethodLogicalName(method);
-                if (!IsPropertyOrEventAccessor(method) && matcher.IsMatch(
+                if (matcher.IsMatch(
                         method.Name,
                         logicalName,
-                        CecilFormatting.MemberName(method.DeclaringType, method.Name),
-                        CecilFormatting.MemberName(method.DeclaringType, logicalName),
+                        CecilFormatting.MemberName(declaringType, method.Name),
+                        LogicalMemberName(declaringType, method.Name, logicalName),
                         method.FullName,
                         symbol))
                 {
@@ -253,8 +258,9 @@ public sealed class AssemblySearcher
         SearchOptions options,
         SearchMatcher matcher,
         SearchHitCollector hits,
-        ResolutionDiagnostics resolutionDiagnostics)
+        ReferenceScratch scratch)
     {
+        var searchTypes = options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace);
         foreach (var method in type.Methods.Where(method => method.HasBody))
         {
             string? container = null;
@@ -285,26 +291,34 @@ public sealed class AssemblySearcher
                 {
                     case MethodReference target:
                         SearchMethodReference(target, instruction, file, assemblyName,
-                            GetContainer, GetLocation, options, matcher, hits, resolutionDiagnostics);
+                            GetContainer, GetLocation, options, matcher, hits, scratch);
                         break;
                     case FieldReference target:
                         SearchFieldReference(target, instruction, file, assemblyName,
-                            GetContainer, GetLocation, options, matcher, hits);
+                            GetContainer, GetLocation, options, matcher, hits, scratch);
                         break;
                     case TypeReference target:
-                        if (options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace))
+                        if (searchTypes)
                         {
-                            SearchTypeReferences([target], instruction, file, assemblyName,
-                                GetContainer, GetLocation, options, matcher, hits);
+                            scratch.Roots.Clear();
+                            scratch.Roots.Add(target);
+                            SearchTypeReferences(instruction, file, assemblyName,
+                                GetContainer, GetLocation, options, matcher, hits, scratch);
                         }
 
                         break;
                     case Mono.Cecil.CallSite callSite:
-                        if (options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace))
+                        if (searchTypes)
                         {
-                            SearchTypeReferences(
-                                callSite.Parameters.Select(parameter => parameter.ParameterType).Prepend(callSite.ReturnType),
-                                instruction, file, assemblyName, GetContainer, GetLocation, options, matcher, hits);
+                            scratch.Roots.Clear();
+                            scratch.Roots.Add(callSite.ReturnType);
+                            foreach (var parameter in callSite.Parameters)
+                            {
+                                scratch.Roots.Add(parameter.ParameterType);
+                            }
+
+                            SearchTypeReferences(instruction, file, assemblyName,
+                                GetContainer, GetLocation, options, matcher, hits, scratch);
                         }
 
                         break;
@@ -323,13 +337,13 @@ public sealed class AssemblySearcher
         SearchOptions options,
         SearchMatcher matcher,
         SearchHitCollector hits,
-        ResolutionDiagnostics resolutionDiagnostics)
+        ReferenceScratch scratch)
     {
         if (options.Kinds.Includes(HitKind.Method) ||
             options.Kinds.Includes(HitKind.Property) ||
             options.Kinds.Includes(HitKind.Event))
         {
-            foreach (var candidate in ResolveMemberCandidates(target, options, file, resolutionDiagnostics))
+            foreach (var candidate in scratch.CandidatesFor(target))
             {
                 if (options.Kinds.Includes(candidate.Kind) &&
                     matcher.IsMatch(
@@ -348,19 +362,21 @@ public sealed class AssemblySearcher
 
         if (options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace))
         {
-            var referencedTypes = new List<TypeReference>(target.Parameters.Count + 4)
+            var roots = scratch.Roots;
+            roots.Clear();
+            roots.Add(target.DeclaringType);
+            roots.Add(target.ReturnType);
+            foreach (var parameter in target.Parameters)
             {
-                target.DeclaringType,
-                target.ReturnType,
-            };
-            referencedTypes.AddRange(target.Parameters.Select(parameter => parameter.ParameterType));
-            if (target is GenericInstanceMethod genericMethod)
-            {
-                referencedTypes.AddRange(genericMethod.GenericArguments);
+                roots.Add(parameter.ParameterType);
             }
 
-            SearchTypeReferences(referencedTypes, instruction, file, assemblyName,
-                getContainer, getLocation, options, matcher, hits);
+            if (target is GenericInstanceMethod genericMethod)
+            {
+                roots.AddRange(genericMethod.GenericArguments);
+            }
+
+            SearchTypeReferences(instruction, file, assemblyName, getContainer, getLocation, options, matcher, hits, scratch);
         }
     }
 
@@ -373,28 +389,38 @@ public sealed class AssemblySearcher
         Func<SourceLocation?> getLocation,
         SearchOptions options,
         SearchMatcher matcher,
-        SearchHitCollector hits)
+        SearchHitCollector hits,
+        ReferenceScratch scratch)
     {
-        var symbol = CecilFormatting.Field(target);
-        if (options.Kinds.Includes(HitKind.Field) && matcher.IsMatch(
-                target.Name,
-                CecilFormatting.MemberName(target.DeclaringType, target.Name),
-                target.FullName,
-                symbol))
+        if (options.Kinds.Includes(HitKind.Field))
         {
-            Add(hits, file, assemblyName, HitScope.Reference, HitKind.Field,
-                symbol, getContainer, getLocation, instruction.Offset);
+            var symbol = scratch.SymbolFor(target);
+            if (matcher.IsMatch(
+                    target.Name,
+                    CecilFormatting.MemberName(target.DeclaringType, target.Name),
+                    target.FullName,
+                    symbol))
+            {
+                Add(hits, file, assemblyName, HitScope.Reference, HitKind.Field,
+                    symbol, getContainer, getLocation, instruction.Offset);
+            }
         }
 
         if (options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace))
         {
-            SearchTypeReferences([target.DeclaringType, target.FieldType], instruction, file, assemblyName,
-                getContainer, getLocation, options, matcher, hits);
+            scratch.Roots.Clear();
+            scratch.Roots.Add(target.DeclaringType);
+            scratch.Roots.Add(target.FieldType);
+            SearchTypeReferences(instruction, file, assemblyName, getContainer, getLocation, options, matcher, hits, scratch);
         }
     }
 
+    /// <summary>
+    /// Searches every type reachable from <see cref="ReferenceScratch.Roots"/> for one instruction.
+    /// A type whose unscoped name collides with another scope in the same instruction is shown
+    /// with its @Assembly identity so the two remain distinguishable.
+    /// </summary>
     private static void SearchTypeReferences(
-        IEnumerable<TypeReference> roots,
         Instruction instruction,
         string file,
         string assemblyName,
@@ -402,39 +428,52 @@ public sealed class AssemblySearcher
         Func<SourceLocation?> getLocation,
         SearchOptions options,
         SearchMatcher matcher,
-        SearchHitCollector hits)
+        SearchHitCollector hits,
+        ReferenceScratch scratch)
     {
-        if (!options.Kinds.Includes(HitKind.Type) && !options.Kinds.Includes(HitKind.Namespace))
+        var searchTypes = options.Kinds.Includes(HitKind.Type);
+        var searchNamespaces = options.Kinds.Includes(HitKind.Namespace);
+        if (!searchTypes && !searchNamespaces)
         {
             return;
         }
 
-        var targets = ExpandTypeReferences(roots)
-            .Where(target => target is not GenericParameter)
-            .ToArray();
-        var scopedNames = targets
-            .GroupBy(CecilFormatting.Type, StringComparer.Ordinal)
-            .Where(group => group.Select(CecilFormatting.TypeIdentity).Distinct(StringComparer.Ordinal).Skip(1).Any())
-            .Select(group => group.Key)
-            .ToHashSet(StringComparer.Ordinal);
-        var seenTypes = new HashSet<string>(StringComparer.Ordinal);
-        var seenNamespaces = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var target in targets)
+        scratch.BeginInstruction();
+        foreach (var target in ExpandTypeReferences(scratch.Roots, scratch.ExpansionStack))
         {
-            var unscopedSymbol = CecilFormatting.Type(target);
+            if (target is GenericParameter)
+            {
+                continue;
+            }
+
+            var unscoped = CecilFormatting.Type(target);
             var identity = CecilFormatting.TypeIdentity(target);
-            var symbol = scopedNames.Contains(unscopedSymbol) ? identity : unscopedSymbol;
-            if (options.Kinds.Includes(HitKind.Type) &&
-                seenTypes.Add(identity) &&
-                matcher.IsMatch(target.Name, target.FullName, unscopedSymbol, symbol))
+            if (scratch.FirstIdentity.TryAdd(unscoped, identity))
+            {
+                // first occurrence
+            }
+            else if (!string.Equals(scratch.FirstIdentity[unscoped], identity, StringComparison.Ordinal))
+            {
+                scratch.Collisions.Add(unscoped);
+            }
+
+            scratch.Targets.Add((target, unscoped, identity));
+        }
+
+        foreach (var (target, unscoped, identity) in scratch.Targets)
+        {
+            var symbol = scratch.Collisions.Contains(unscoped) ? identity : unscoped;
+            if (searchTypes &&
+                scratch.SeenTypes.Add(identity) &&
+                matcher.IsMatch(target.Name, target.FullName, unscoped, symbol))
             {
                 Add(hits, file, assemblyName, HitScope.Reference, HitKind.Type,
                     symbol, getContainer, getLocation, instruction.Offset);
             }
 
-            if (options.Kinds.Includes(HitKind.Namespace) &&
+            if (searchNamespaces &&
                 !string.IsNullOrEmpty(target.Namespace) &&
-                seenNamespaces.Add(target.Namespace) &&
+                scratch.SeenNamespaces.Add(target.Namespace) &&
                 matcher.IsMatch(target.Namespace))
             {
                 Add(hits, file, assemblyName, HitScope.Reference, HitKind.Namespace,
@@ -443,9 +482,14 @@ public sealed class AssemblySearcher
         }
     }
 
-    private static IEnumerable<TypeReference> ExpandTypeReferences(IEnumerable<TypeReference> roots)
+    private static IEnumerable<TypeReference> ExpandTypeReferences(List<TypeReference> roots, Stack<TypeReference> stack)
     {
-        var stack = new Stack<TypeReference>(roots.Reverse());
+        stack.Clear();
+        for (var index = roots.Count - 1; index >= 0; index--)
+        {
+            stack.Push(roots[index]);
+        }
+
         var visited = 0;
         while (stack.Count > 0)
         {
@@ -471,7 +515,11 @@ public sealed class AssemblySearcher
                     stack.Push(requiredModifier.ModifierType);
                     break;
                 case FunctionPointerType functionPointer:
-                    PushReverse(stack, functionPointer.Parameters.Select(parameter => parameter.ParameterType));
+                    for (var index = functionPointer.Parameters.Count - 1; index >= 0; index--)
+                    {
+                        stack.Push(functionPointer.Parameters[index].ParameterType);
+                    }
+
                     stack.Push(functionPointer.ReturnType);
                     break;
                 case TypeSpecification specification:
@@ -629,13 +677,19 @@ public sealed class AssemblySearcher
         return null;
     }
 
-    private static void PushReverse(Stack<TypeReference> stack, IEnumerable<TypeReference> types)
+    private static void PushReverse(Stack<TypeReference> stack, Mono.Collections.Generic.Collection<TypeReference> types)
     {
-        foreach (var type in types.Reverse())
+        for (var index = types.Count - 1; index >= 0; index--)
         {
-            stack.Push(type);
+            stack.Push(types[index]);
         }
     }
+
+    /// <summary>The qualified logical name, or null when it would duplicate the metadata name.</summary>
+    private static string? LogicalMemberName(string declaringType, string metadataName, string logicalName) =>
+        string.Equals(metadataName, logicalName, StringComparison.Ordinal)
+            ? null
+            : CecilFormatting.MemberName(declaringType, logicalName);
 
     private static IEnumerable<TypeDefinition> AllTypes(IEnumerable<TypeDefinition> roots)
     {
@@ -683,6 +737,64 @@ public sealed class AssemblySearcher
             options.Kinds.Includes(HitKind.Property) ||
             options.Kinds.Includes(HitKind.Event);
         return needsDefinitionLocations ? SymbolMode.Auto : SymbolMode.Off;
+    }
+
+    /// <summary>
+    /// Per-module working state for reference searches: caches keyed by Cecil's interned
+    /// reference objects (the same MemberRef/TypeRef instance recurs across instructions), and
+    /// reusable collections so the per-instruction type walk allocates nothing steady-state.
+    /// </summary>
+    private sealed class ReferenceScratch(string file, SearchOptions options, ResolutionDiagnostics diagnostics)
+    {
+        private readonly Dictionary<MethodReference, IReadOnlyList<MemberCandidate>> _methodCandidates =
+            new(ReferenceEqualityComparer.Instance);
+
+        private readonly Dictionary<FieldReference, string> _fieldSymbols = new(ReferenceEqualityComparer.Instance);
+
+        public List<TypeReference> Roots { get; } = new(8);
+
+        public Stack<TypeReference> ExpansionStack { get; } = new(16);
+
+        public List<(TypeReference Type, string Unscoped, string Identity)> Targets { get; } = new(16);
+
+        public Dictionary<string, string> FirstIdentity { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> Collisions { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> SeenTypes { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> SeenNamespaces { get; } = new(StringComparer.Ordinal);
+
+        public IReadOnlyList<MemberCandidate> CandidatesFor(MethodReference method)
+        {
+            if (!_methodCandidates.TryGetValue(method, out var candidates))
+            {
+                candidates = ResolveMemberCandidates(method, options, file, diagnostics);
+                _methodCandidates.Add(method, candidates);
+            }
+
+            return candidates;
+        }
+
+        public string SymbolFor(FieldReference field)
+        {
+            if (!_fieldSymbols.TryGetValue(field, out var symbol))
+            {
+                symbol = CecilFormatting.Field(field);
+                _fieldSymbols.Add(field, symbol);
+            }
+
+            return symbol;
+        }
+
+        public void BeginInstruction()
+        {
+            Targets.Clear();
+            FirstIdentity.Clear();
+            Collisions.Clear();
+            SeenTypes.Clear();
+            SeenNamespaces.Clear();
+        }
     }
 
     private sealed record MemberCandidate(

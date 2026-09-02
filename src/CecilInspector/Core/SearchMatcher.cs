@@ -24,8 +24,9 @@ internal sealed class SearchMatcher
         }
     }
 
-    public bool IsMatch(params string?[] candidates)
+    public bool IsMatch(params ReadOnlySpan<string?> candidates)
     {
+        var comparison = _options.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         foreach (var candidate in candidates)
         {
             if (candidate is null)
@@ -33,7 +34,6 @@ internal sealed class SearchMatcher
                 continue;
             }
 
-            var comparison = _options.IgnoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             var matches = _options.MatchMode switch
             {
                 MatchMode.Contains => candidate.Contains(_options.Query, comparison),

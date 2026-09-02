@@ -15,16 +15,21 @@ internal static class CecilFormatting
     /// </summary>
     public static string Type(TypeReference type) => Format(type, PlainLeafFormatter);
 
-    public static string Method(MethodReference method)
+    public static string Method(MethodReference method) => Method(method, Type(method.DeclaringType));
+
+    /// <param name="declaringType">Precomputed <see cref="Type"/> of the declaring type.</param>
+    public static string Method(MethodReference method, string declaringType)
     {
         var qualifyScopes = method is MethodDefinition definition && HasUnqualifiedCollision(definition);
-        return FormatMethod(method, qualifyScopes ? ScopedLeafFormatter : ContextualFormatter(method));
+        return FormatMethod(method, declaringType, qualifyScopes ? ScopedLeafFormatter : ContextualFormatter(method));
     }
 
-    public static string Property(PropertyDefinition property)
+    public static string Property(PropertyDefinition property) => Property(property, Type(property.DeclaringType));
+
+    public static string Property(PropertyDefinition property, string declaringType)
     {
         var parameters = FormatPropertyParameters(property.Parameters.Select(parameter => Type(parameter.ParameterType)));
-        return $"{Type(property.DeclaringType)}::{property.Name}{parameters} : {Type(property.PropertyType)}";
+        return $"{declaringType}::{property.Name}{parameters} : {Type(property.PropertyType)}";
     }
 
     public static string Property(PropertyDefinition property, MethodReference accessor)
@@ -55,14 +60,20 @@ internal static class CecilFormatting
                ContextualType(propertyType, accessor);
     }
 
-    public static string Field(FieldReference field) =>
-        $"{Type(field.DeclaringType)}::{field.Name} : {Type(field.FieldType)}";
+    public static string Field(FieldReference field) => Field(field, Type(field.DeclaringType));
+
+    public static string Field(FieldReference field, string declaringType) =>
+        $"{declaringType}::{field.Name} : {Type(field.FieldType)}";
 
     public static string MemberName(TypeReference declaringType, string name) =>
-        $"{Type(declaringType)}::{name}";
+        MemberName(Type(declaringType), name);
 
-    public static string Event(EventDefinition @event) =>
-        $"{Type(@event.DeclaringType)}::{@event.Name} : {Type(@event.EventType)}";
+    public static string MemberName(string declaringType, string name) => $"{declaringType}::{name}";
+
+    public static string Event(EventDefinition @event) => Event(@event, Type(@event.DeclaringType));
+
+    public static string Event(EventDefinition @event, string declaringType) =>
+        $"{declaringType}::{@event.Name} : {Type(@event.EventType)}";
 
     public static string Event(EventDefinition @event, MethodReference accessor) =>
         $"{Type(accessor.DeclaringType)}::{@event.Name} : {ContextualType(@event.EventType, accessor)}";
@@ -139,10 +150,13 @@ internal static class CecilFormatting
         return parameters.Length == 0 ? string.Empty : $"({string.Join(", ", parameters)})";
     }
 
-    private static string FormatMethod(MethodReference method, Func<TypeReference, string> leaf)
+    private static string FormatMethod(MethodReference method, Func<TypeReference, string> leaf) =>
+        FormatMethod(method, Type(method.DeclaringType), leaf);
+
+    private static string FormatMethod(MethodReference method, string declaringType, Func<TypeReference, string> leaf)
     {
         var parameters = string.Join(", ", method.Parameters.Select(parameter => Format(parameter.ParameterType, leaf)));
-        return $"{Type(method.DeclaringType)}::{MethodName(method)}({parameters}) : {Format(method.ReturnType, leaf)}";
+        return $"{declaringType}::{MethodName(method)}({parameters}) : {Format(method.ReturnType, leaf)}";
     }
 
     private static bool HasUnqualifiedCollision(MethodDefinition method)
