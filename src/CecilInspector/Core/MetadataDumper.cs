@@ -32,10 +32,7 @@ public sealed class MetadataDumper
                 AppendModule(writer, module, file, options.IncludeIl);
                 if (filesDiscovered == 1 && module.Assembly is not null)
                 {
-                    foreach (var secondaryModule in module.Assembly.Modules.Where(candidate => candidate != module))
-                    {
-                        AppendModule(writer, secondaryModule, secondaryModule.FileName, options.IncludeIl);
-                    }
+                    AppendSecondaryModules(writer, module, file, options.IncludeIl, errors);
                 }
 
                 succeeded++;
@@ -49,6 +46,40 @@ public sealed class MetadataDumper
 
         writer.WriteLine($"Summary: discovered={filesDiscovered}, succeeded={succeeded}, errors={errors.Count}");
         return new DumpResult(errors, filesDiscovered, succeeded);
+    }
+
+    private static void AppendSecondaryModules(
+        TextWriter writer,
+        ModuleDefinition manifestModule,
+        string file,
+        bool includeIl,
+        List<ScanError> errors)
+    {
+        ModuleDefinition[] secondaryModules;
+        try
+        {
+            secondaryModules = manifestModule.Assembly.Modules.Where(candidate => candidate != manifestModule).ToArray();
+        }
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
+        {
+            errors.Add(new ScanError(file, $"secondary netmoduleを読み込めません: {ex.Message}"));
+            writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(file)}");
+            return;
+        }
+
+        foreach (var secondaryModule in secondaryModules)
+        {
+            var moduleFile = secondaryModule.FileName ?? file;
+            try
+            {
+                AppendModule(writer, secondaryModule, moduleFile, includeIl);
+            }
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
+            {
+                errors.Add(new ScanError(moduleFile, ex.Message));
+                writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(moduleFile)}");
+            }
+        }
     }
 
     private static void AppendModule(TextWriter writer, ModuleDefinition module, string file, bool includeIl)

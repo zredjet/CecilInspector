@@ -40,11 +40,7 @@ public sealed class AssemblySearcher
                     SearchModule(module, file, options, matcher, fileHits, resolutionDiagnostics);
                     if (files.Count == 1 && module.Assembly is not null)
                     {
-                        foreach (var secondaryModule in module.Assembly.Modules.Where(candidate => candidate != module))
-                        {
-                            SearchModule(secondaryModule, secondaryModule.FileName, options, matcher, fileHits,
-                                resolutionDiagnostics);
-                        }
+                        SearchSecondaryModules(module, file, options, matcher, fileHits, resolutionDiagnostics, errors);
                     }
 
                     fileHasSymbols = module.HasSymbols;
@@ -61,6 +57,10 @@ public sealed class AssemblySearcher
             {
                 errors.Add(new ScanError(file, ex.Message));
             }
+            finally
+            {
+                resolutionDiagnostics.Flush();
+            }
         }
 
         return new SearchResult(
@@ -71,6 +71,45 @@ public sealed class AssemblySearcher
             discovery.FileCount,
             succeeded,
             withSymbols);
+    }
+
+    /// <summary>
+    /// Searches the secondary netmodules of a multi-module assembly. A missing or broken
+    /// netmodule is reported as a warning for that module only; hits already collected from
+    /// the manifest module are kept.
+    /// </summary>
+    private static void SearchSecondaryModules(
+        ModuleDefinition manifestModule,
+        string file,
+        SearchOptions options,
+        SearchMatcher matcher,
+        SearchHitCollector hits,
+        ResolutionDiagnostics resolutionDiagnostics,
+        List<ScanError> errors)
+    {
+        ModuleDefinition[] secondaryModules;
+        try
+        {
+            secondaryModules = manifestModule.Assembly.Modules.Where(candidate => candidate != manifestModule).ToArray();
+        }
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
+        {
+            errors.Add(new ScanError(file, $"secondary netmoduleを読み込めません: {ex.Message}"));
+            return;
+        }
+
+        foreach (var secondaryModule in secondaryModules)
+        {
+            var moduleFile = secondaryModule.FileName ?? file;
+            try
+            {
+                SearchModule(secondaryModule, moduleFile, options, matcher, hits, resolutionDiagnostics);
+            }
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
+            {
+                errors.Add(new ScanError(moduleFile, ex.Message));
+            }
+        }
     }
 
     private static void SearchModule(
@@ -689,9 +728,14 @@ public sealed class AssemblySearcher
         }
     }
 
+    /// <summary>
+    /// Collects member references whose dependency could not be resolved and reports them as
+    /// one warning per (file, dependency) with a member count, so a missing framework assembly
+    /// yields a handful of lines instead of one per referenced member.
+    /// </summary>
     private sealed class ResolutionDiagnostics(List<ScanError> errors)
     {
-        private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, DependencyFailure> _failures = new(StringComparer.Ordinal);
 
         public void Add(string file, MethodReference method, Exception? exception)
         {
@@ -701,16 +745,38 @@ public sealed class AssemblySearcher
                 ModuleReference module => module.Name,
                 _ => method.DeclaringType.Scope?.Name ?? method.DeclaringType.FullName,
             };
-            var member = method.FullName;
-            if (!_seen.Add($"{file}\0{dependency}\0{member}"))
+
+            var key = $"{file}\0{dependency}";
+            if (!_failures.TryGetValue(key, out var failure))
             {
-                return;
+                failure = new DependencyFailure(file, dependency, method.FullName, exception?.Message);
+                _failures.Add(key, failure);
             }
 
-            errors.Add(new ScanError(
-                file,
-                $"依存先 '{dependency}' のメンバー '{member}' を解決できず、参照分類が不完全です" +
-                (exception is null ? "。" : $": {exception.Message}")));
+            failure.Members.Add(method.FullName);
+        }
+
+        /// <summary>Emits the aggregated warnings collected so far; call once per analyzed file.</summary>
+        public void Flush()
+        {
+            foreach (var failure in _failures.Values.OrderBy(item => item.Dependency, StringComparer.Ordinal))
+            {
+                var count = failure.Members.Count;
+                var members = count == 1
+                    ? $"メンバー '{failure.FirstMember}'"
+                    : $"メンバー {count} 件（例: '{failure.FirstMember}'）";
+                errors.Add(new ScanError(
+                    failure.File,
+                    $"依存先 '{failure.Dependency}' の{members}を解決できず、参照分類が不完全です" +
+                    (failure.Reason is null ? "。" : $": {failure.Reason}")));
+            }
+
+            _failures.Clear();
+        }
+
+        private sealed record DependencyFailure(string File, string Dependency, string FirstMember, string? Reason)
+        {
+            public HashSet<string> Members { get; } = new(StringComparer.Ordinal);
         }
     }
 }

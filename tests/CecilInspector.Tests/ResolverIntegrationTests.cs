@@ -221,6 +221,74 @@ public sealed class ResolverIntegrationTests
         }
     }
 
+    [Fact]
+    public void UnresolvedMembersAreAggregatedPerDependency()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var caller = Path.Combine(root, "Caller.dll");
+        try
+        {
+            CreateCallerAssembly(caller, "get_Logical", secondGetterName: "get_Other");
+
+            var result = Search(caller, "Nothing", SearchKinds.All, MatchMode.Contains);
+
+            var error = Assert.Single(result.Errors);
+            Assert.Contains("Model", error.Message, StringComparison.Ordinal);
+            Assert.Contains("2 件", error.Message, StringComparison.Ordinal);
+            Assert.Contains("分類が不完全", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void FailedResolutionIsNotProbedAgain()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [], [root]);
+            var missing = new AssemblyNameReference("DoesNotExist", new Version(1, 0, 0, 0));
+
+            Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(missing));
+            var probesAfterFirstAttempt = resolver.ProbeCount;
+            Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(missing));
+
+            Assert.True(probesAfterFirstAttempt > 0);
+            Assert.Equal(probesAfterFirstAttempt, resolver.ProbeCount);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void SearchDirectoriesExcludeCecilRelativeDefaults()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        var reference = Path.Combine(root, "reference");
+        Directory.CreateDirectory(reference);
+        try
+        {
+            using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [reference], [root]);
+
+            var directories = resolver.GetSearchDirectories();
+
+            Assert.Equal([root, reference], directories);
+            Assert.DoesNotContain(".", directories);
+            Assert.DoesNotContain("bin", directories);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     private static SearchResult Search(
         string input,
         string query,
@@ -266,7 +334,8 @@ public sealed class ResolverIntegrationTests
         string path,
         string getterName,
         Version? modelVersion = null,
-        bool handlerParameter = false)
+        bool handlerParameter = false,
+        string? secondGetterName = null)
     {
         using var assembly = AssemblyDefinition.CreateAssembly(
             new AssemblyNameDefinition("Caller", new Version(1, 0, 0, 0)),
@@ -310,6 +379,20 @@ public sealed class ResolverIntegrationTests
 
         method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
         type.Methods.Add(method);
+
+        if (secondGetterName is not null)
+        {
+            var second = new MethodReference(secondGetterName, module.TypeSystem.Int32, modelType) { HasThis = true };
+            var other = new MethodDefinition(
+                "CallOther",
+                MethodAttributes.Public | MethodAttributes.Static,
+                module.TypeSystem.Int32);
+            other.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+            other.Body.Instructions.Add(Instruction.Create(OpCodes.Callvirt, second));
+            other.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+            type.Methods.Add(other);
+        }
+
         assembly.Write(path);
     }
 }
