@@ -529,7 +529,7 @@ public sealed class AssemblySearcher
         }
     }
 
-    private static IReadOnlyList<MemberCandidate> ResolveMemberCandidates(
+    private static List<MemberCandidate> ResolveMemberCandidates(
         MethodReference method,
         SearchOptions options,
         string file,
@@ -587,7 +587,7 @@ public sealed class AssemblySearcher
     /// reported both as an ordinary method and as the property/event it most likely belongs to,
     /// which avoids false negatives when the dependency is missing.
     /// </summary>
-    private static IReadOnlyList<MemberCandidate> UnresolvedCandidates(MethodReference method, SearchOptions options)
+    private static List<MemberCandidate> UnresolvedCandidates(MethodReference method, SearchOptions options)
     {
         var candidates = new List<MemberCandidate>(2);
         if (options.Kinds.Includes(HitKind.Method))

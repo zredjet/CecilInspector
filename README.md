@@ -27,7 +27,10 @@ dotnet test CecilInspector.slnx -c Release --no-build
 
 ```bash
 dotnet run --project src/CecilInspector -- search ./assemblies CustomerService --kind type,method
+dotnet run --project src/CecilInspector -- --version
 ```
+
+`global.json`で.NET 10 SDKを固定し、`Directory.Build.props`で警告をエラー扱いにしたうえで.NETアナライザーとエディター設定の検証をビルド時に有効化しています。CI（GitHub Actions）はLinux、Windows、macOSでビルドとテストを実行します。
 
 配布用の単一実行ファイルを作る場合（例: Windows x64）:
 

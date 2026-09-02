@@ -1,0 +1,63 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml,slnx,props,csproj}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# Style the codebase already follows
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+csharp_prefer_braces = true:warning
+csharp_style_prefer_primary_constructors = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_collection_expression = when_types_loosely_match:suggestion
+dotnet_sort_system_directives_first = false
+csharp_new_line_before_open_brace = all
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+
+# Naming: private fields _camelCase, everything else PascalCase / camelCase
+dotnet_naming_rule.private_fields_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_underscore.style = underscore_camel
+dotnet_naming_rule.private_fields_underscore.severity = warning
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_fields.required_modifiers =
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+dotnet_naming_style.underscore_camel.required_prefix = _
+
+# Analyzer tuning
+# CA1303/CA1305/CA1310: the tool's messages are intentionally Japanese literals and all
+# string comparisons already pass an explicit StringComparison where it matters.
+dotnet_diagnostic.CA1303.severity = none
+dotnet_diagnostic.CA1305.severity = none
+# CA1848/CA2254 logging rules do not apply (no ILogger).
+dotnet_diagnostic.CA1848.severity = none
+# CA1031: the per-file loop intentionally catches broad Cecil failures via ExceptionPolicy.
+dotnet_diagnostic.CA1031.severity = none
+# CA1062: nullable reference types are enabled; public argument null checks are redundant.
+dotnet_diagnostic.CA1062.severity = none
+# CA1822: AssemblySearcher/MetadataDumper are deliberately instance-based entry points.
+dotnet_code_quality.CA1822.api_surface = private, internal
+# CA1707: test method names use underscores freely.
+[tests/**.cs]
+dotnet_diagnostic.CA1707.severity = none
+# Fixtures deliberately use single-letter generic parameters (Swap<A, B>) and a
+# public static mutable field so IL references exercise the searcher.
+dotnet_diagnostic.CA1715.severity = none
+dotnet_diagnostic.CA2211.severity = none
+dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA2007.severity = none

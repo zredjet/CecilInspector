@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>cecil-inspector</AssemblyName>
     <RootNamespace>CecilInspector</RootNamespace>
+    <Version>0.2.0</Version>
+    <Description>Mono.Cecil based metadata and IL search for .NET assemblies without loading them.</Description>
   </PropertyGroup>
 
   <ItemGroup>

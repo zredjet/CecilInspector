@@ -147,6 +147,16 @@ public sealed class CliProcessTests
     }
 
     [Fact]
+    public async Task VersionPrintsProductVersion()
+    {
+        var result = await RunAsync("--version");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.StartsWith("cecil-inspector 0.", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Empty(result.StandardError);
+    }
+
+    [Fact]
     public async Task MissingInputIsAnInputError()
     {
         using var temp = new TempDirectory();

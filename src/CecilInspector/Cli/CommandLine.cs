@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using CecilInspector.Core;
 
 namespace CecilInspector.Cli;
@@ -11,6 +12,7 @@ public static class CommandLine
         使用方法:
           cecil-inspector search <assembly-or-directory> <query> [options]
           cecil-inspector dump   <assembly-or-directory> [options]
+          cecil-inspector --version
 
         オプションは位置引数の前後どちらにも置けます。'--' 以降はすべて位置引数として扱うので、
         '-' で始まる検索文言は '--' の後に指定してください。
@@ -41,11 +43,29 @@ public static class CommandLine
           cecil-inspector dump app.dll --include-il --output metadata.txt
         """;
 
+    /// <summary>Product version without the source-revision suffix, e.g. "0.2.0".</summary>
+    public static string VersionText
+    {
+        get
+        {
+            var informational = typeof(CommandLine).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            var version = informational ?? typeof(CommandLine).Assembly.GetName().Version?.ToString() ?? "unknown";
+            var plus = version.IndexOf('+', StringComparison.Ordinal);
+            return plus >= 0 ? version[..plus] : version;
+        }
+    }
+
     public static ParseResult Parse(string[] args)
     {
         if (args.Length == 0 || IsHelpToken(args[0]))
         {
             return ParseResult.Failure(null);
+        }
+
+        if (args.Length == 1 && IsVersionToken(args[0]))
+        {
+            return ParseResult.Version();
         }
 
         return args[0].ToLowerInvariant() switch
@@ -261,6 +281,11 @@ public static class CommandLine
 
     private static bool IsSubcommandHelp(string[] args) =>
         args.Length == 2 && IsHelpToken(args[1]);
+
+    private static bool IsVersionToken(string value) =>
+        value.Equals("version", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("--version", StringComparison.OrdinalIgnoreCase) ||
+        value.Equals("-v", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsHelpToken(string value) =>
         value.Equals("help", StringComparison.OrdinalIgnoreCase) ||

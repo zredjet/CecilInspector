@@ -61,10 +61,14 @@ public sealed record DumpOptions(
     string? OutputPath,
     IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
 
-public sealed record ParseResult(AppOptions? Options, string? Error)
+/// <param name="Options">Parsed command, or null for help/version/errors.</param>
+/// <param name="Error">Diagnostic for an invalid invocation; null means help or version was requested.</param>
+/// <param name="ShowVersion">True when the user asked for the version string instead of help.</param>
+public sealed record ParseResult(AppOptions? Options, string? Error, bool ShowVersion = false)
 {
     public bool IsSuccess => Options is not null;
 
     public static ParseResult Success(AppOptions options) => new(options, null);
     public static ParseResult Failure(string? error) => new(null, error);
+    public static ParseResult Version() => new(null, null, true);
 }

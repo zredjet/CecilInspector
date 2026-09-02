@@ -15,6 +15,12 @@ catch (Exception ex) when (ex is IOException or System.Security.SecurityExceptio
 }
 
 var parseResult = CommandLine.Parse(args);
+if (parseResult.ShowVersion)
+{
+    Console.WriteLine($"cecil-inspector {CommandLine.VersionText}");
+    return 0;
+}
+
 if (!parseResult.IsSuccess)
 {
     if (!string.IsNullOrWhiteSpace(parseResult.Error))

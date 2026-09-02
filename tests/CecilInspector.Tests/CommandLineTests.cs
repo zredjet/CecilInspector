@@ -158,6 +158,30 @@ public sealed class CommandLineTests
         Assert.Null(CommandLine.Parse(["search", token]).Error);
     }
 
+    [Theory]
+    [InlineData("--version")]
+    [InlineData("-V")]
+    [InlineData("version")]
+    public void VersionIsRecognized(string token)
+    {
+        var result = CommandLine.Parse([token]);
+
+        Assert.True(result.ShowVersion);
+        Assert.False(result.IsSuccess);
+        Assert.Null(result.Error);
+        Assert.Matches(@"^\d+\.\d+\.\d+", CommandLine.VersionText);
+        Assert.DoesNotContain('+', CommandLine.VersionText);
+    }
+
+    [Fact]
+    public void VersionWithExtraArgumentsIsAnUnknownCommand()
+    {
+        var result = CommandLine.Parse(["--version", "extra"]);
+
+        Assert.False(result.ShowVersion);
+        Assert.Contains("不明なコマンド", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ParsesDumpOptions()
     {
