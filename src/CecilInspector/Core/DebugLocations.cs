@@ -50,22 +50,24 @@ internal static class DebugLocations
 
     private static MethodDefinition? ResolveStateMachineMoveNext(MethodDefinition method)
     {
-        var attribute = method.CustomAttributes.FirstOrDefault(candidate =>
-            candidate.AttributeType.FullName is
-                "System.Runtime.CompilerServices.AsyncStateMachineAttribute" or
-                "System.Runtime.CompilerServices.IteratorStateMachineAttribute");
-        if (attribute is null || attribute.ConstructorArguments.Count == 0 ||
-            attribute.ConstructorArguments[0].Value is not TypeReference stateMachineType)
-        {
-            return null;
-        }
-
         try
         {
+            var attribute = method.CustomAttributes.FirstOrDefault(candidate =>
+                candidate.AttributeType.FullName is
+                    "System.Runtime.CompilerServices.AsyncStateMachineAttribute" or
+                    "System.Runtime.CompilerServices.IteratorStateMachineAttribute");
+            if (attribute is null || attribute.ConstructorArguments.Count == 0 ||
+                attribute.ConstructorArguments[0].Value is not TypeReference stateMachineType)
+            {
+                return null;
+            }
+
             return stateMachineType.Resolve()?.Methods.FirstOrDefault(candidate => candidate.Name == "MoveNext");
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
+            // Decoding the attribute or resolving the state machine needs dependencies that
+            // may be missing; a definition without a location is better than a failed file.
             return null;
         }
     }

@@ -81,7 +81,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 | `--output`, `-o` | 新規作成するUTF-8出力ファイル | なし |
 | `--reference-path` | 依存アセンブリの検索フォルダ（複数回指定可） | 入力内のアセンブリ所在フォルダ |
 
-入力がフォルダの場合は、`.dll`、`.exe`、`.netmodule`を対象にします。単一のmanifest DLLを指定した場合は、そのassemblyに含まれるsecondary netmoduleも検索します。依存DLLは「解析対象DLLの隣接フォルダ → `--reference-path`の指定順 → 入力内のアセンブリ所在フォルダ」の順で探索し、Version、Culture、PublicKeyTokenを含むAssemblyIdentityが一致する候補だけを採用します。入力外の依存DLLは`--reference-path`で追加してください。解決できない依存先があると、ファイルと依存先ごとに1行の警告（未解決メンバー数と例を含む）を標準エラーへ出し、終了コード`3`にします。ツールの実行ランタイムと異なるバージョンの.NETを対象にする場合（例: net8向けDLLをnet10のツールで解析）は、`--reference-path <dotnet>/packs/Microsoft.NETCore.App.Ref/8.0.x/ref/net8.0` のように参照アセンブリのフォルダを指定してください。
+入力がフォルダの場合は、`.dll`、`.exe`、`.netmodule`を対象にします。単一のmanifest DLLを指定した場合は、そのassemblyに含まれるsecondary netmoduleも検索します。依存DLLは「解析対象DLLの隣接フォルダ → `--reference-path`の指定順 → 入力内のアセンブリ所在フォルダ → フレームワークの既知フォルダ → 実行中ランタイムのアセンブリ → GAC（Windows）」の順で探索します。前半3つのユーザーが管理するフォルダでは、Version、Culture、PublicKeyTokenを含むAssemblyIdentityが完全一致する候補だけを採用します。フレームワーク由来の場所では、ランタイム自身のバインドと同じく、同じ名前・Culture・PublicKeyTokenで同じか新しいVersionの候補を採用します（`netstandard 2.0.0.0`が2.1.0.0のファサードへ解決されるなど）。フレームワークの既知フォルダとは、実行中のランタイム、`DOTNET_ROOT`や既定のインストール先にある.NETの共有ランタイム（`shared/Microsoft.NETCore.App/<version>`）と参照パック（`packs/Microsoft.NETCore.App.Ref`）、Windowsでは`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319`などの.NET Frameworkフォルダと参照アセンブリです。単一ファイル配布版は自身のランタイムを内蔵しているためディスク上のフォルダが無く、この探索に依存します。たとえばnet8向けDLLは、.NET 8以降のランタイムか参照パックがインストールされていれば解決できます。入力外の依存DLLは`--reference-path`で追加してください。解決できない依存先があると、ファイルと依存先ごとに1行の警告（未解決メンバー数と例を含む）を標準エラーへ出し、終了コード`3`にします。特定バージョンの参照アセンブリで厳密に解決したい場合は、`--reference-path <dotnet>/packs/Microsoft.NETCore.App.Ref/8.0.x/ref/net8.0` のように参照アセンブリのフォルダを指定してください（このフォルダは完全一致で扱われます）。
 
 オプションは位置引数の前後どちらにも置けます。`-`で始まる検索文言は`--`の後に指定します（例: `cecil-inspector search app.dll -- -Prefixed --match exact`）。
 
@@ -98,7 +98,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 | `2` | 入力エラー、全対象の解析失敗、出力失敗 |
 | `3` | 一部対象だけ解析できた部分成功 |
 
-検索結果とダンプ本体は標準出力および`--output`へ、警告は標準エラーへ出力します。自動化では終了コード3を「不完全な結果」として扱ってください。
+検索結果とダンプ本体は標準出力および`--output`へ、警告は標準エラーへ出力します。自動化では終了コード3を「不完全な結果」として扱ってください。環境変数`CECIL_INSPECTOR_DEBUG=1`を設定すると、警告の原因となった例外のスタックトレースも標準エラーへ出力します。
 
 ### PDBと行番号
 
@@ -121,7 +121,7 @@ cecil-inspector dump ./bin --include-il --output metadata.txt
 
 アセンブリ参照、リソース、型、基底型、インターフェイス、フィールド、プロパティ、イベント、メソッド、パラメーターを出力します。`--include-il`を付けるとIL命令と利用可能なソース行も出力します。
 
-検索レポートとダンプはコンソールと一時ファイルへ逐次書き込むため、レポート全文をメモリへ蓄積しません。完了後に一時ファイルを`--output`の指定名へ確定します。解析中のファイル差し替えによる部分ヒット混入を防ぐため、各対象moduleのメタデータはファイル単位でメモリへ即時読み込みします。
+検索レポートとダンプはコンソールと一時ファイルへ逐次書き込むため、レポート全文をメモリへ蓄積しません。完了後に一時ファイルを`--output`の指定名へ確定します。解析中のファイル差し替えによる部分ヒット混入を防ぐため、各対象ファイルは解析前に丸ごとメモリへ読み込み、そのコピーに対して必要な部分だけを遅延解析します。
 
 ## 検索上の注意
 

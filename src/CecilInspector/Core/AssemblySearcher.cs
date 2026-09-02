@@ -61,7 +61,7 @@ public sealed class AssemblySearcher
             }
             catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
             {
-                errors.Add(new ScanError(file, ex.Message));
+                errors.Add(new ScanError(file, ex.Message, ex));
             }
             finally
             {

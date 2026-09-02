@@ -69,11 +69,15 @@ internal static class CecilModuleReader
         bool throwIfNoSymbol,
         IAssemblyResolver resolver)
     {
+        // InMemory copies the whole file before anything is parsed, which is what protects a
+        // scan from a file being swapped underneath it. Deferred parsing on top of that copy
+        // avoids Immediate mode's eager decoding of every custom attribute blob, which needs
+        // the BCL resolvable (enum-typed arguments) merely to open a module.
         var parameters = new ReaderParameters
         {
             AssemblyResolver = resolver,
             InMemory = true,
-            ReadingMode = ReadingMode.Immediate,
+            ReadingMode = ReadingMode.Deferred,
             ReadSymbols = readSymbols,
             ThrowIfSymbolsAreNotMatching = throwIfNoSymbol,
         };

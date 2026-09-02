@@ -33,7 +33,8 @@ public sealed record SearchHit(
     SourceLocation? Location,
     int? IlOffset);
 
-public sealed record ScanError(string FilePath, string Message);
+/// <param name="Exception">The underlying failure, printed with CECIL_INSPECTOR_DEBUG=1 for diagnosis.</param>
+public sealed record ScanError(string FilePath, string Message, Exception? Exception = null);
 
 public sealed record HitCount(HitScope Scope, HitKind Kind, int Count);
 

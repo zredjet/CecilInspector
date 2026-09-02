@@ -225,9 +225,11 @@ public sealed class ResolverIntegrationTests
 
         var directories = resolver.GetSearchDirectories();
 
-        Assert.Equal([root, reference], directories);
+        // Input-derived directories come first; framework probe directories follow them.
+        Assert.Equal([root, reference], directories.Take(2));
         Assert.DoesNotContain(".", directories);
         Assert.DoesNotContain("bin", directories);
+        Assert.All(directories, directory => Assert.True(Path.IsPathRooted(directory), directory));
     }
 
     private static SearchResult Search(

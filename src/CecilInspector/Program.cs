@@ -95,8 +95,13 @@ static int ExitCode(int filesSucceeded, int errorCount) => errorCount switch
 
 static void WriteDiagnostics(IEnumerable<ScanError> errors)
 {
+    var debug = Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
     foreach (var error in errors)
     {
         Console.Error.WriteLine($"警告: {TextSanitizer.Escape(error.FilePath)}: {TextSanitizer.Escape(error.Message)}");
+        if (debug && error.Exception is not null)
+        {
+            Console.Error.WriteLine(TextSanitizer.Escape(error.Exception.ToString()).Replace("\\n", Environment.NewLine, StringComparison.Ordinal));
+        }
     }
 }
