@@ -82,6 +82,27 @@ public sealed class MetadataDumperTests
         }
     }
 
+    [Fact]
+    public void DumpUsesCanonicalGenericFormatting()
+    {
+        var assembly = typeof(MetadataDumperTests).Assembly.Location;
+        var options = new DumpOptions(assembly, true, false, SymbolMode.Off, null, []);
+        using var writer = new StringWriter();
+
+        new MetadataDumper().Dump(options, [assembly], 1, [Path.GetDirectoryName(assembly)!], [], writer);
+
+        var output = writer.ToString();
+        Assert.Contains(
+            "GenericSignatureFixture::TwoArgs() : System.Func`2<System.Int32, System.String>",
+            output,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "GenericContainer`1::Store(!0) : System.Void",
+            output,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("`2<System.Int32,System.String>", output, StringComparison.Ordinal);
+    }
+
     private sealed class FailingWriter : StringWriter
     {
         public override void WriteLine(string? value) => throw new IOException("disk full");

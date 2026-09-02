@@ -461,6 +461,65 @@ public sealed class AssemblySearcherTests
         Assert.Equal(result.TotalMatches, result.Counts.Sum(count => count.Count));
     }
 
+    [Fact]
+    public void SelfReferencingGenericSwapReferenceTerminates()
+    {
+        var result = Search("Mirror", SearchKinds.Method, SearchScope.References, MatchMode.Exact);
+
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(
+            "CecilInspector.Tests.Swap`2<!1, !0>::Mirror(CecilInspector.Tests.Swap`2<!0, !1>) : System.Void",
+            hit.Symbol);
+    }
+
+    [Fact]
+    public void SwappedGenericMethodArgumentsRenderPositionally()
+    {
+        var result = Search("SwapCallee", SearchKinds.Method, SearchScope.References, MatchMode.Exact);
+
+        var hit = Assert.Single(result.Hits);
+        Assert.Equal(
+            "CecilInspector.Tests.GenericSwapFixture::SwapCallee`2<!!1, !!0>() : System.Void",
+            hit.Symbol);
+    }
+
+    [Fact]
+    public void MultiArgumentGenericSignaturesAgreeAcrossScopes()
+    {
+        const string expected =
+            "CecilInspector.Tests.GenericSignatureFixture::TwoArgs() : System.Func`2<System.Int32, System.String>";
+
+        var result = Search("TwoArgs", SearchKinds.Method, SearchScope.All, MatchMode.Exact);
+
+        Assert.Equal(2, result.Hits.Count);
+        Assert.All(result.Hits, hit => Assert.Equal(expected, hit.Symbol));
+        Assert.Contains(result.Hits, hit => hit.Scope == HitScope.Definition);
+        Assert.Contains(result.Hits, hit => hit.Scope == HitScope.Reference);
+
+        var roundTrip = Search(expected, SearchKinds.Method, SearchScope.All, MatchMode.Exact);
+
+        Assert.Equal(2, roundTrip.Hits.Count);
+    }
+
+    [Fact]
+    public void GenericParameterInsideInstanceRendersPositional()
+    {
+        var definitions = Search("Wrap", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact);
+        var references = Search("Wrap", SearchKinds.Method, SearchScope.References, MatchMode.Exact);
+
+        var definition = Assert.Single(definitions.Hits);
+        Assert.Equal(
+            "CecilInspector.Tests.GenericSignatureFixture::Wrap`1(System.Collections.Generic.Dictionary`2<System.String, !!0>) : " +
+            "System.Collections.Generic.List`1<!!0>",
+            definition.Symbol);
+
+        var reference = Assert.Single(references.Hits);
+        Assert.Equal(
+            "CecilInspector.Tests.GenericSignatureFixture::Wrap`1<System.Int32>(System.Collections.Generic.Dictionary`2<System.String, System.Int32>) : " +
+            "System.Collections.Generic.List`1<System.Int32>",
+            reference.Symbol);
+    }
+
     private static SearchResult Search(string query, SearchKinds kinds, SearchScope scope, MatchMode match) =>
         new AssemblySearcher().Search(Options(query, kinds, scope, match));
 
@@ -562,5 +621,32 @@ public sealed class ExplicitSearchImplementation : IExplicitSearchContract
         target.LogicalEvent += handler;
         target.LogicalEvent -= handler;
         return length;
+    }
+}
+
+public sealed class Swap<A, B>
+{
+    public void Mirror(Swap<B, A> other) => other.Mirror(this);
+}
+
+public sealed class GenericSwapFixture
+{
+    public void SwapCaller<A, B>() => SwapCallee<B, A>();
+
+    public void SwapCallee<X, Y>()
+    {
+    }
+}
+
+public sealed class GenericSignatureFixture
+{
+    public Func<int, string> TwoArgs() => null!;
+
+    public List<T> Wrap<T>(Dictionary<string, T> input) => [];
+
+    public void Invoke(GenericSignatureFixture fixture)
+    {
+        fixture.TwoArgs();
+        fixture.Wrap<int>(null!);
     }
 }
