@@ -5,6 +5,9 @@
     <AssemblyName>cecil-inspector</AssemblyName>
     <RootNamespace>CecilInspector</RootNamespace>
     <Version>0.2.0</Version>
+    <Authors>zredjet</Authors>
+    <Copyright>Copyright (c) 2026 zredjet</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>Mono.Cecil based metadata and IL search for .NET assemblies without loading them.</Description>
   </PropertyGroup>
 

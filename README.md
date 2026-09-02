@@ -132,3 +132,7 @@ cecil-inspector dump ./bin --include-il --output metadata.txt
 - 型や名前空間の参照は、メンバー参照の宣言型も含むため、同じソース行で複数件になることがあります。
 - シグネチャ表示はCecil形式を基にした正規形です。ネスト型は`+`、ジェネリック実引数は`, `区切り（例: ``System.Func`2<System.Int32, System.String>``）、ジェネリックパラメーターは型の`!n`／メソッドの`!!n`で表し、定義と参照のどちらのスコープでも同じ文字列になります。同じ完全型名が別アセンブリにあるため衝突する場合は`@Assembly`でスコープを付加します。
 - 出力に表示された正規シグネチャは、そのまま`--match exact`の検索文言として再利用できます。
+
+## ライセンス
+
+[MIT License](LICENSE)。依存する[Mono.Cecil](https://github.com/jbevain/cecil)もMITライセンスです。
