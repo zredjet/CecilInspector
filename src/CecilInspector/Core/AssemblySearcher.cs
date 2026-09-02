@@ -23,6 +23,7 @@ public sealed class AssemblySearcher
         var matcher = new SearchMatcher(options);
         var hits = new SearchHitCollector(options.MaxResults);
         var errors = new List<ScanError>(discovery.Errors);
+        var warnings = new List<ScanError>();
         var resolutionDiagnostics = new ResolutionDiagnostics(errors);
         var succeeded = 0;
         var withSymbols = 0;
@@ -35,8 +36,13 @@ public sealed class AssemblySearcher
             {
                 var fileHits = new SearchHitCollector(options.MaxResults);
                 var fileHasSymbols = false;
-                using (var module = CecilModuleReader.Read(file, symbolMode, resolver))
+                using (var module = CecilModuleReader.Read(file, symbolMode, resolver, out var symbolWarning))
                 {
+                    if (symbolWarning is not null)
+                    {
+                        warnings.Add(new ScanError(file, symbolWarning));
+                    }
+
                     SearchModule(module, file, options, matcher, fileHits, resolutionDiagnostics);
                     if (files.Count == 1 && module.Assembly is not null)
                     {
@@ -70,7 +76,8 @@ public sealed class AssemblySearcher
             errors,
             discovery.FileCount,
             succeeded,
-            withSymbols);
+            withSymbols,
+            warnings);
     }
 
     /// <summary>

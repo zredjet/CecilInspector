@@ -1,6 +1,18 @@
+using System.Text;
 using CecilInspector.Cli;
 using CecilInspector.Core;
 using CecilInspector.Output;
+
+try
+{
+    // Reports contain arbitrary identifiers and Japanese diagnostics; a legacy console code page
+    // would turn them into '?' and make the console differ from the UTF-8 --output file.
+    Console.OutputEncoding = new UTF8Encoding(false);
+}
+catch (Exception ex) when (ex is IOException or System.Security.SecurityException)
+{
+    // Headless hosts may not allow changing the console encoding; keep the default.
+}
 
 var parseResult = CommandLine.Parse(args);
 if (!parseResult.IsSuccess)
@@ -30,6 +42,7 @@ try
     var writer = reportFile is null ? Console.Out : new TeeTextWriter(Console.Out, reportFile.Writer);
 
     IReadOnlyList<ScanError> errors;
+    IReadOnlyList<ScanError> warnings;
     int filesSucceeded;
     switch (options)
     {
@@ -37,15 +50,13 @@ try
             {
                 var result = new AssemblySearcher().Search(searchOptions, discovery);
                 TextReport.WriteSearch(writer, result, searchOptions);
-                errors = result.Errors;
-                filesSucceeded = result.FilesSucceeded;
+                (errors, warnings, filesSucceeded) = (result.Errors, result.Warnings, result.FilesSucceeded);
                 break;
             }
         case DumpOptions dumpOptions:
             {
                 var result = new MetadataDumper().Dump(dumpOptions, discovery, writer);
-                errors = result.Errors;
-                filesSucceeded = result.FilesSucceeded;
+                (errors, warnings, filesSucceeded) = (result.Errors, result.Warnings, result.FilesSucceeded);
                 break;
             }
         default:
@@ -54,6 +65,7 @@ try
 
     writer.Flush();
     reportFile?.Commit();
+    WriteDiagnostics(warnings);
     WriteDiagnostics(errors);
     return ExitCode(filesSucceeded, errors.Count);
 }

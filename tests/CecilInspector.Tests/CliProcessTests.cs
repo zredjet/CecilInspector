@@ -143,6 +143,30 @@ public sealed class CliProcessTests
         }
     }
 
+    [Fact]
+    public async Task CorruptPdbIsWarnedAboutButDoesNotFailTheScan()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var assembly = Path.Combine(directory, "Target.dll");
+            File.Copy(TestAssembly, assembly);
+            File.WriteAllBytes(Path.Combine(directory, "Target.pdb"), "BSJB"u8.ToArray());
+
+            var result = await RunAsync("search", assembly, "EstimateTarget", "--kind", "method", "--match", "exact");
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("警告:", result.StandardError, StringComparison.Ordinal);
+            Assert.Contains("シンボルなしで解析", result.StandardError, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
     private static async Task<ProcessResult> RunAsync(params string[] arguments)
     {
         var startInfo = new ProcessStartInfo("dotnet")

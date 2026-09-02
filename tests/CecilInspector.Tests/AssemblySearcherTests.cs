@@ -108,6 +108,10 @@ public sealed class AssemblySearcherTests
             Assert.Single(result.Hits);
             Assert.Equal(1, result.FilesSucceeded);
             Assert.Equal(0, result.FilesWithSymbols);
+            Assert.Empty(result.Errors);
+            var warning = Assert.Single(result.Warnings);
+            Assert.Equal(assembly, warning.FilePath);
+            Assert.Contains("シンボルなしで解析", warning.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -533,6 +537,36 @@ public sealed class AssemblySearcherTests
             "CecilInspector.Tests.GenericSignatureFixture::Wrap`1<System.Int32>(System.Collections.Generic.Dictionary`2<System.String, System.Int32>) : " +
             "System.Collections.Generic.List`1<System.Int32>",
             reference.Symbol);
+    }
+
+    [Theory]
+    [InlineData(0.30)]
+    [InlineData(0.60)]
+    [InlineData(0.90)]
+    [InlineData(0.97)]
+    public void TruncatedImageIsReportedAsScanErrorNotCrash(double keepRatio)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var bytes = File.ReadAllBytes(ThisAssembly);
+            var truncated = Path.Combine(directory, "Truncated.dll");
+            File.WriteAllBytes(truncated, bytes[..(int)(bytes.Length * keepRatio)]);
+            var options = Options("a", SearchKinds.All, SearchScope.All, MatchMode.Contains) with
+            {
+                InputPath = truncated,
+                SymbolMode = SymbolMode.Off,
+            };
+
+            var result = new AssemblySearcher().Search(options);
+
+            Assert.Equal(1, result.FilesSucceeded + result.Errors.Count);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
     }
 
     private static SearchResult Search(string query, SearchKinds kinds, SearchScope scope, MatchMode match) =>

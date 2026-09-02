@@ -7,8 +7,17 @@ namespace CecilInspector.Core;
 
 internal static class CecilModuleReader
 {
-    public static ModuleDefinition Read(string filePath, SymbolMode symbolMode, IAssemblyResolver resolver)
+    /// <param name="symbolWarning">
+    /// Set when symbol mode is auto and the module could only be read after dropping symbols
+    /// (for example a corrupt PDB), so the caller can tell the user why locations are missing.
+    /// </param>
+    public static ModuleDefinition Read(
+        string filePath,
+        SymbolMode symbolMode,
+        IAssemblyResolver resolver,
+        out string? symbolWarning)
     {
+        symbolWarning = null;
         if (symbolMode == SymbolMode.Off)
         {
             return ReadCore(filePath, false, false, resolver);
@@ -33,7 +42,9 @@ internal static class CecilModuleReader
                 // The no-symbol read is also the discriminator: only an error caused by symbol
                 // processing can succeed here. If the assembly itself is invalid, preserve the
                 // original exception instead of replacing it with the retry's exception.
-                return ReadCore(filePath, false, false, resolver);
+                var module = ReadCore(filePath, false, false, resolver);
+                symbolWarning = $"PDBを読み込めなかったためシンボルなしで解析しました: {firstException.Message}";
+                return module;
             }
             catch (Exception retryException) when (!ExceptionPolicy.IsFatal(retryException))
             {

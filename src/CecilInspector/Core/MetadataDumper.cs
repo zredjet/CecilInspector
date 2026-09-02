@@ -21,6 +21,7 @@ public sealed class MetadataDumper
         var referenceDirectories = CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
         writer = new GuardedTextWriter(writer);
         var errors = new List<ScanError>(discoveryErrors);
+        var warnings = new List<ScanError>();
         var succeeded = 0;
 
         foreach (var file in files)
@@ -28,7 +29,12 @@ public sealed class MetadataDumper
             using var resolver = CecilResolverFactory.Create(file, referenceDirectories, searchDirectories);
             try
             {
-                using var module = CecilModuleReader.Read(file, options.SymbolMode, resolver);
+                using var module = CecilModuleReader.Read(file, options.SymbolMode, resolver, out var symbolWarning);
+                if (symbolWarning is not null)
+                {
+                    warnings.Add(new ScanError(file, symbolWarning));
+                }
+
                 AppendModule(writer, module, file, options.IncludeIl);
                 if (filesDiscovered == 1 && module.Assembly is not null)
                 {
@@ -45,7 +51,7 @@ public sealed class MetadataDumper
         }
 
         writer.WriteLine($"Summary: discovered={filesDiscovered}, succeeded={succeeded}, errors={errors.Count}");
-        return new DumpResult(errors, filesDiscovered, succeeded);
+        return new DumpResult(errors, filesDiscovered, succeeded, warnings);
     }
 
     private static void AppendSecondaryModules(

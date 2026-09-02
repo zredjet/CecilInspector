@@ -37,6 +37,9 @@ public sealed record ScanError(string FilePath, string Message);
 
 public sealed record HitCount(HitScope Scope, HitKind Kind, int Count);
 
+/// <param name="Errors">Problems that made the result incomplete; any entry yields exit code 3 (or 2).</param>
+/// <param name="Warnings">Notices that do not affect completeness or the exit code, such as a
+/// corrupt PDB that was skipped in symbol mode auto.</param>
 public sealed record SearchResult(
     IReadOnlyList<SearchHit> Hits,
     int TotalMatches,
@@ -44,12 +47,15 @@ public sealed record SearchResult(
     IReadOnlyList<ScanError> Errors,
     int FilesDiscovered,
     int FilesSucceeded,
-    int FilesWithSymbols);
+    int FilesWithSymbols,
+    IReadOnlyList<ScanError> Warnings);
 
+/// <inheritdoc cref="SearchResult"/>
 public sealed record DumpResult(
     IReadOnlyList<ScanError> Errors,
     int FilesDiscovered,
-    int FilesSucceeded);
+    int FilesSucceeded,
+    IReadOnlyList<ScanError> Warnings);
 
 internal static class KindMapping
 {

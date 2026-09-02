@@ -76,7 +76,9 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 | `--output`, `-o` | 新規作成するUTF-8出力ファイル | なし |
 | `--reference-path` | 依存アセンブリの検索フォルダ（複数回指定可） | 入力内のアセンブリ所在フォルダ |
 
-入力がフォルダの場合は、`.dll`、`.exe`、`.netmodule`を対象にします。単一のmanifest DLLを指定した場合は、そのassemblyに含まれるsecondary netmoduleも検索します。依存DLLは「解析対象DLLの隣接フォルダ → `--reference-path`の指定順 → 入力内のアセンブリ所在フォルダ」の順で探索し、Version、Culture、PublicKeyTokenを含むAssemblyIdentityが一致する候補だけを採用します。入力外の依存DLLは`--reference-path`で追加してください。
+入力がフォルダの場合は、`.dll`、`.exe`、`.netmodule`を対象にします。単一のmanifest DLLを指定した場合は、そのassemblyに含まれるsecondary netmoduleも検索します。依存DLLは「解析対象DLLの隣接フォルダ → `--reference-path`の指定順 → 入力内のアセンブリ所在フォルダ」の順で探索し、Version、Culture、PublicKeyTokenを含むAssemblyIdentityが一致する候補だけを採用します。入力外の依存DLLは`--reference-path`で追加してください。解決できない依存先があると、ファイルと依存先ごとに1行の警告（未解決メンバー数と例を含む）を標準エラーへ出し、終了コード`3`にします。ツールの実行ランタイムと異なるバージョンの.NETを対象にする場合（例: net8向けDLLをnet10のツールで解析）は、`--reference-path <dotnet>/packs/Microsoft.NETCore.App.Ref/8.0.x/ref/net8.0` のように参照アセンブリのフォルダを指定してください。
+
+オプションは位置引数の前後どちらにも置けます。`-`で始まる検索文言は`--`の後に指定します（例: `cecil-inspector search app.dll -- -Prefixed --match exact`）。
 
 ネイティブDLL、壊れたファイル、アクセス不能なフォルダは標準エラーへ警告を出し、残りを続けます。フォルダ入力配下のファイル／ディレクトリのシンボリックリンクと再解析ポイントは追跡せず、警告と部分成功として扱います。入力ルート自体がディレクトリのシンボリックリンクの場合は拒否します。ハードリンクはパス単位で解析・集計します。
 
@@ -95,7 +97,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 
 ### PDBと行番号
 
-`--symbols auto`はPortable PDB、Windows PDBなど、Mono.Cecilが利用できるシンボルを自動的に読みます。外部PDBだけでなく埋め込みPortable PDBも対象です。外部PDBが壊れている場合はシンボルなしで再試行します。名前空間・型・フィールドの定義だけを検索する場合は、行番号を表示できないためPDB読込を省略します。
+`--symbols auto`はPortable PDB、Windows PDBなど、Mono.Cecilが利用できるシンボルを自動的に読みます。外部PDBだけでなく埋め込みPortable PDBも対象です。外部PDBが壊れている場合はシンボルなしで再試行し、その旨を標準エラーへ警告します（終了コードには影響しません）。名前空間・型・フィールドの定義だけを検索する場合は、行番号を表示できないためPDB読込を省略します。
 
 - メソッド定義: 最初の非hiddenシーケンスポイント
 - async/iterator定義: 生成されたステートマシンの`MoveNext`にある最初の有効なシーケンスポイントへフォールバック
@@ -118,6 +120,7 @@ cecil-inspector dump ./bin --include-il --output metadata.txt
 
 ## 検索上の注意
 
+- `--match regex`は.NETの非バックトラッキングエンジンを優先し、照合時間が入力長に対して線形になります。先読み・後読み、後方参照、アトミックグループなど非対応の構文を含むパターンだけは従来のエンジンへフォールバックし、1回の照合に250ミリ秒のタイムアウトを適用します。
 - `references`はIL命令のオペランドに現れる参照です。リフレクション、DI設定、文字列から解決される型名・メソッド名は検出できません。
 - メソッド参照の宣言型、戻り型、引数型、ジェネリック実引数と、フィールド参照のフィールド型も型参照として検索します。
 - プロパティとイベントの参照は、参照先を解決できる場合はMethodSemanticsと所有Property/Eventから分類します。解決不能な`get_`/`set_`、`add_`/`remove_`/`raise_`参照は、偽陰性を避けるため通常メソッドとアクセサー候補（プロパティ／イベント）の両方として扱います。
