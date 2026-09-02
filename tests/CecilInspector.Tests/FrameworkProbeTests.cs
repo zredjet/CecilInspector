@@ -1,5 +1,6 @@
 using CecilInspector.Core;
 using Mono.Cecil;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace CecilInspector.Tests;
@@ -181,6 +182,78 @@ public sealed class FrameworkProbeTests
         Assert.Equal("System.Runtime", resolved.Name.Name);
         Assert.True(resolved.Name.Version >= request.Version);
     }
+
+    [Fact]
+    public void DotnetRootEnvironmentVariableIsProbedAfterTheRunningRuntime()
+    {
+        using var temp = new TempDirectory();
+        var runtime = temp.CreateSubdirectory("runtime");
+        var root = temp.CreateSubdirectory("root");
+        var shared = Directory.CreateDirectory(Path.Combine(root, "shared", "Microsoft.NETCore.App", "9.0.0")).FullName;
+
+        var directories = FrameworkProbe.ComputeDirectories(Env(("DOTNET_ROOT", root)), OSPlatform.Linux, runtime);
+
+        Assert.Equal([runtime, shared], directories);
+    }
+
+    [Fact]
+    public void ArchitectureSpecificDotnetRootIsProbedToo()
+    {
+        using var temp = new TempDirectory();
+        var root = temp.CreateSubdirectory("arm64");
+        var shared = Directory.CreateDirectory(Path.Combine(root, "shared", "Microsoft.NETCore.App", "8.0.0")).FullName;
+
+        var directories = FrameworkProbe.ComputeDirectories(Env(("DOTNET_ROOT_ARM64", root)), OSPlatform.OSX, null);
+
+        Assert.Contains(shared, directories);
+    }
+
+    [Fact]
+    public void DotnetOnPathIsResolvedThroughItsSymbolicLink()
+    {
+        using var temp = new TempDirectory();
+        SymbolicLinks.SkipUnlessSupported(temp);
+        var real = temp.CreateSubdirectory("real");
+        var bin = temp.CreateSubdirectory("bin");
+        File.WriteAllText(Path.Combine(real, "dotnet"), "#!/bin/sh");
+        File.CreateSymbolicLink(Path.Combine(bin, "dotnet"), Path.Combine(real, "dotnet"));
+        var path = string.Join(Path.PathSeparator, temp.CreateSubdirectory("empty"), bin);
+
+        var root = FrameworkProbe.DotnetRootFromPath(Env(("PATH", path)), OSPlatform.Linux);
+
+        Assert.Equal(real, root);
+    }
+
+    [Fact]
+    public void DotnetShimOnPathYieldsItsOwnDirectory()
+    {
+        using var temp = new TempDirectory();
+        var bin = temp.CreateSubdirectory("bin");
+        File.WriteAllText(Path.Combine(bin, "dotnet.exe"), "shim");
+
+        Assert.Equal(bin, FrameworkProbe.DotnetRootFromPath(Env(("PATH", bin)), OSPlatform.Windows));
+        Assert.Null(FrameworkProbe.DotnetRootFromPath(Env(("PATH", bin)), OSPlatform.Linux));
+        Assert.Null(FrameworkProbe.DotnetRootFromPath(Env(), OSPlatform.Linux));
+    }
+
+    [Fact]
+    public void GacRootsAndFrameworkDirectoriesComeFromWindirOnWindowsOnly()
+    {
+        using var temp = new TempDirectory();
+        var windir = temp.CreateSubdirectory("Windows");
+        var gac = Directory.CreateDirectory(Path.Combine(windir, "Microsoft.NET", "assembly")).FullName;
+        var legacyGac = Directory.CreateDirectory(Path.Combine(windir, "assembly")).FullName;
+        var runtime = Directory.CreateDirectory(Path.Combine(windir, "Microsoft.NET", "Framework64", "v4.0.30319")).FullName;
+        var env = Env(("WINDIR", windir));
+
+        Assert.Equal([gac, legacyGac], FrameworkProbe.ComputeGacRoots(env, OSPlatform.Windows));
+        Assert.Empty(FrameworkProbe.ComputeGacRoots(env, OSPlatform.Linux));
+        Assert.Contains(runtime, FrameworkProbe.ComputeDirectories(env, OSPlatform.Windows, null));
+        Assert.DoesNotContain(runtime, FrameworkProbe.ComputeDirectories(env, OSPlatform.Linux, null));
+    }
+
+    private static Func<string, string?> Env(params (string Name, string Value)[] variables) =>
+        name => variables.FirstOrDefault(variable => variable.Name == name).Value;
 
     private static void WriteAssembly(string path, Version version)
     {

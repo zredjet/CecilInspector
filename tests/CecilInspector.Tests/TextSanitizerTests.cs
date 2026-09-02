@@ -18,7 +18,7 @@ public sealed class TextSanitizerTests
     [Fact]
     public void EscapesControlCharacters()
     {
-        Assert.Equal("a\\rb\\nc\\td\\ee\\u0000", TextSanitizer.Escape("a\rb\nc\tde\0"));
+        Assert.Equal("a\\rb\\nc\\td\\ee\\u0000", TextSanitizer.Escape("a\rb\nc\td\u001be\0"));
     }
 
     [Fact]

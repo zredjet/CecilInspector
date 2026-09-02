@@ -1,5 +1,5 @@
-using System.Runtime.InteropServices;
 using Mono.Cecil;
+using System.Runtime.InteropServices;
 
 namespace CecilInspector.Core;
 
@@ -7,16 +7,25 @@ namespace CecilInspector.Core;
 /// Locates framework assemblies that are not next to the analyzed file: the running runtime,
 /// every installed .NET shared runtime and reference pack, and on Windows the .NET Framework
 /// directories and the GAC. Needed most by the self-contained single-file build, whose own
-/// runtime lives inside the bundle where Mono.Cecil cannot see it.
+/// runtime lives inside the bundle where Mono.Cecil cannot see it. The compute methods take
+/// the environment and platform as parameters so every layout can be tested on any machine.
 /// </summary>
 internal static class FrameworkProbe
 {
-    private static readonly Lazy<IReadOnlyList<string>> DefaultDirectories = new(ComputeDefaultDirectories);
-    private static readonly Lazy<IReadOnlyList<string>> DefaultGacRoots = new(ComputeDefaultGacRoots);
+    private static readonly Lazy<IReadOnlyList<string>> DefaultDirectories = new(() =>
+        ComputeDirectories(Environment.GetEnvironmentVariable, CurrentPlatform, RuntimeEnvironment.GetRuntimeDirectory()));
+
+    private static readonly Lazy<IReadOnlyList<string>> DefaultGacRoots = new(() =>
+        ComputeGacRoots(Environment.GetEnvironmentVariable, CurrentPlatform));
 
     public static IReadOnlyList<string> Directories => DefaultDirectories.Value;
 
     public static IReadOnlyList<string> GacRoots => DefaultGacRoots.Value;
+
+    internal static OSPlatform CurrentPlatform =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? OSPlatform.Windows
+        : RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? OSPlatform.OSX
+        : OSPlatform.Linux;
 
     /// <summary>shared/Microsoft.NETCore.App/&lt;version&gt; and packs/Microsoft.NETCore.App.Ref/&lt;version&gt;/ref/&lt;tfm&gt; under a dotnet root, newest first.</summary>
     public static IEnumerable<string> DotnetRootDirectories(string dotnetRoot)
@@ -94,7 +103,13 @@ internal static class FrameworkProbe
         }
     }
 
-    private static List<string> ComputeDefaultDirectories()
+    /// <param name="getEnvironmentVariable">Source of DOTNET_ROOT*, PATH, WINDIR, ProgramFiles*.</param>
+    /// <param name="platform">Decides which install layouts and executable names are probed.</param>
+    /// <param name="runtimeDirectory">The running runtime's directory (framework-dependent builds), or null.</param>
+    internal static IReadOnlyList<string> ComputeDirectories(
+        Func<string, string?> getEnvironmentVariable,
+        OSPlatform platform,
+        string? runtimeDirectory)
     {
         var directories = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -109,9 +124,9 @@ internal static class FrameworkProbe
 
         // The running runtime (framework-dependent builds). Inside a single-file bundle this
         // does not exist on disk and is skipped.
-        Add(RuntimeEnvironment.GetRuntimeDirectory());
+        Add(runtimeDirectory);
 
-        foreach (var root in DotnetRoots())
+        foreach (var root in DotnetRoots(getEnvironmentVariable, platform))
         {
             foreach (var directory in DotnetRootDirectories(root))
             {
@@ -119,11 +134,11 @@ internal static class FrameworkProbe
             }
         }
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (platform == OSPlatform.Windows)
         {
             foreach (var directory in WindowsFrameworkDirectories(
-                         Environment.GetEnvironmentVariable("WINDIR"),
-                         Environment.GetEnvironmentVariable("ProgramFiles(x86)")))
+                         getEnvironmentVariable("WINDIR"),
+                         getEnvironmentVariable("ProgramFiles(x86)")))
             {
                 Add(directory);
             }
@@ -132,14 +147,14 @@ internal static class FrameworkProbe
         return directories;
     }
 
-    private static string[] ComputeDefaultGacRoots()
+    internal static IReadOnlyList<string> ComputeGacRoots(Func<string, string?> getEnvironmentVariable, OSPlatform platform)
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (platform != OSPlatform.Windows)
         {
             return [];
         }
 
-        var windir = Environment.GetEnvironmentVariable("WINDIR");
+        var windir = getEnvironmentVariable("WINDIR");
         if (string.IsNullOrEmpty(windir))
         {
             return [];
@@ -150,21 +165,21 @@ internal static class FrameworkProbe
             .ToArray();
     }
 
-    private static IEnumerable<string> DotnetRoots()
+    internal static IEnumerable<string> DotnetRoots(Func<string, string?> getEnvironmentVariable, OSPlatform platform)
     {
         var candidates = new List<string?>
         {
-            Environment.GetEnvironmentVariable("DOTNET_ROOT"),
-            Environment.GetEnvironmentVariable("DOTNET_ROOT_X64"),
-            Environment.GetEnvironmentVariable("DOTNET_ROOT_ARM64"),
+            getEnvironmentVariable("DOTNET_ROOT"),
+            getEnvironmentVariable("DOTNET_ROOT_X64"),
+            getEnvironmentVariable("DOTNET_ROOT_ARM64"),
         };
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (platform == OSPlatform.Windows)
         {
-            candidates.Add(Combine(Environment.GetEnvironmentVariable("ProgramFiles"), "dotnet"));
-            candidates.Add(Combine(Environment.GetEnvironmentVariable("ProgramFiles(x86)"), "dotnet"));
+            candidates.Add(Combine(getEnvironmentVariable("ProgramFiles"), "dotnet"));
+            candidates.Add(Combine(getEnvironmentVariable("ProgramFiles(x86)"), "dotnet"));
         }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        else if (platform == OSPlatform.OSX)
         {
             candidates.Add("/usr/local/share/dotnet");
             candidates.Add("/opt/homebrew/opt/dotnet/libexec");
@@ -176,7 +191,7 @@ internal static class FrameworkProbe
             candidates.Add("/usr/lib64/dotnet");
         }
 
-        candidates.Add(DotnetRootFromPath());
+        candidates.Add(DotnetRootFromPath(getEnvironmentVariable, platform));
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var candidate in candidates)
@@ -188,10 +203,15 @@ internal static class FrameworkProbe
         }
     }
 
-    private static string? DotnetRootFromPath()
+    /// <summary>
+    /// The directory of the first dotnet executable on PATH, following symbolic links so a
+    /// /usr/local/bin/dotnet link yields the real install root; a shim script (mise, asdf)
+    /// is a plain file and yields its own directory, which is why DOTNET_ROOT is probed first.
+    /// </summary>
+    internal static string? DotnetRootFromPath(Func<string, string?> getEnvironmentVariable, OSPlatform platform)
     {
-        var executable = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "dotnet.exe" : "dotnet";
-        var path = Environment.GetEnvironmentVariable("PATH");
+        var executable = platform == OSPlatform.Windows ? "dotnet.exe" : "dotnet";
+        var path = getEnvironmentVariable("PATH");
         if (string.IsNullOrEmpty(path))
         {
             return null;

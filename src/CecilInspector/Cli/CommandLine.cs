@@ -1,6 +1,6 @@
+using CecilInspector.Core;
 using System.Globalization;
 using System.Reflection;
-using CecilInspector.Core;
 
 namespace CecilInspector.Cli;
 

@@ -4,56 +4,93 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
 
 jobs:
   package:
     runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - name: Resolve version from tag
+      - name: Resolve and validate the version from the tag
         shell: bash
+        # The tag must be vMAJOR.MINOR.PATCH and match <Version> in the csproj, so the tree
+        # that is tagged always says the version it ships as (and --version agrees).
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="$GITHUB_REF_NAME"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' is not of the form vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          CSPROJ_VERSION=$(sed -n 's/.*<Version>\(.*\)<\/Version>.*/\1/p' src/CecilInspector/CecilInspector.csproj)
+          if [[ "$CSPROJ_VERSION" != "$VERSION" ]]; then
+            echo "::error::Tag $TAG does not match <Version>$CSPROJ_VERSION</Version> in CecilInspector.csproj"
+            exit 1
+          fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "ARTIFACT=cecil-inspector-$VERSION-win-x64" >> "$GITHUB_ENV"
       - run: dotnet restore CecilInspector.slnx
-      - run: dotnet build CecilInspector.slnx -c Release --no-restore -p:Version=${{ env.VERSION }}
-      - run: dotnet test CecilInspector.slnx -c Release --no-build
+      - run: dotnet build CecilInspector.slnx -c Release --no-restore
+      - run: dotnet test CecilInspector.slnx -c Release --no-build --logger "trx" --results-directory TestResults
       - name: Publish self-contained single-file win-x64
         run: >
           dotnet publish src/CecilInspector -c Release -r win-x64 --self-contained true
-          -p:PublishSingleFile=true -p:DebugType=none -p:Version=${{ env.VERSION }}
+          -p:PublishSingleFile=true -p:DebugType=none
           -o publish/${{ env.ARTIFACT }}
-      - name: Create ZIP
+      - name: Create ZIP and checksum
         shell: bash
         run: |
           cp LICENSE README.md "publish/$ARTIFACT/"
           mkdir -p dist
           (cd publish && 7z a -tzip "../dist/$ARTIFACT.zip" "$ARTIFACT" > /dev/null)
+          (cd dist && sha256sum "$ARTIFACT.zip" > "$ARTIFACT.zip.sha256")
           ls -l dist
+          cat "dist/$ARTIFACT.zip.sha256"
       - name: Smoke test the published binary
         shell: bash
         # The single-file bundle is a native host, not a managed PE, so search the test
-        # assembly built above rather than the executable itself.
+        # assembly built above rather than the executable itself. Whole-line matches: a
+        # substring "Matches: 1" would also accept "Matches: 10".
         run: |
           EXE="publish/$ARTIFACT/cecil-inspector.exe"
-          "$EXE" --version | grep -F "cecil-inspector $VERSION"
-          "$EXE" search tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll EstimateTarget \
-            --kind method --match exact --symbols off > smoke.txt
-          grep -F "Matches: 1" smoke.txt
+          "$EXE" --version | grep -qx "cecil-inspector $VERSION"
+          TEST_DLL=tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll
+          "$EXE" search "$TEST_DLL" EstimateTarget --kind method --match exact --symbols off > smoke.txt
+          grep -qx "Matches: 1" smoke.txt
+          "$EXE" search "$TEST_DLL" EstimateTarget --kind method --match exact --scope references --format msbuild > smoke-msbuild.txt
+          grep -Eq '^.+\([0-9]+,[0-9]+\): info CI0002: ' smoke-msbuild.txt
+          "$EXE" dump "$TEST_DLL" --include-il --output smoke-dump.txt > /dev/null
+          grep -q "^Summary: discovered=1, succeeded=1, errors=0" smoke-dump.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-release
+          path: TestResults
+          retention-days: 14
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT }}
-          path: dist/*.zip
-      - name: Attach ZIP to the GitHub Release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Attach ZIP and checksum to the GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+        # Create the release, or upload into one that already exists for this tag; any other
+        # failure of either command fails the job instead of being hidden by a fallback.
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "cecil-inspector $VERSION" --generate-notes dist/*.zip \
-            || gh release upload "$GITHUB_REF_NAME" dist/*.zip --clobber
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --title "cecil-inspector $VERSION" --generate-notes dist/*
+          fi

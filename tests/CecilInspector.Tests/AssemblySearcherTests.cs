@@ -66,9 +66,14 @@ public sealed class AssemblySearcherTests
     public void RegexTimeoutIsReportedAsSearchQueryError()
     {
         // The lookahead is unsupported by the non-backtracking engine, which forces the
-        // timeout-guarded backtracking fallback that this test exercises.
+        // timeout-guarded backtracking fallback that this test exercises. A 64-character
+        // namespace makes the single match exceed 250 ms on any machine.
+        using var temp = new TempDirectory();
+        var assembly = temp.File("LongNamespace.dll");
+        GeneratedAssemblies.WriteTypeInNamespace(assembly, new string('a', 64));
         var options = Options("^(?=.)(.+)+Z$", SearchKinds.Namespace, SearchScope.Definitions, MatchMode.Regex) with
         {
+            InputPath = assembly,
             SymbolMode = SymbolMode.Off,
         };
 
@@ -533,7 +538,11 @@ public sealed class AssemblySearcherTests
 
         var result = new AssemblySearcher().Search(options);
 
-        Assert.Equal(1, result.FilesSucceeded + result.Errors.Count);
+        // Up to 97% of the image still loses metadata tables, so the file must be reported as
+        // an error (and never crash); only the last percent or so parses with partial hits.
+        Assert.Equal(0, result.FilesSucceeded);
+        Assert.Single(result.Errors);
+        Assert.Equal(0, result.TotalMatches);
     }
 
     [Fact]
@@ -631,7 +640,7 @@ public sealed class SearchFixture
     {
     }
 
-    public string this[int index] => index.ToString();
+    public string this[int index] => index.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     public string this[string index] => index;
 

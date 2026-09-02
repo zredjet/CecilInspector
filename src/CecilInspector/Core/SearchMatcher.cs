@@ -1,5 +1,5 @@
-using System.Text.RegularExpressions;
 using CecilInspector.Cli;
+using System.Text.RegularExpressions;
 
 namespace CecilInspector.Core;
 

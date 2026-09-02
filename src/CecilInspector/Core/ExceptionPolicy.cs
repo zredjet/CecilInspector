@@ -1,9 +1,9 @@
 namespace CecilInspector.Core;
 
-using System.Diagnostics;
 using CecilInspector.Output;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using System.Diagnostics;
 
 internal static class ExceptionPolicy
 {

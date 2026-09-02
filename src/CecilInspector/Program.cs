@@ -1,8 +1,8 @@
-using System.Runtime.InteropServices;
-using System.Text;
 using CecilInspector.Cli;
 using CecilInspector.Core;
 using CecilInspector.Output;
+using System.Runtime.InteropServices;
+using System.Text;
 
 try
 {

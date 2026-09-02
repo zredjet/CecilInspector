@@ -1,5 +1,5 @@
-using System.Text;
 using CecilInspector.Core;
+using System.Text;
 
 namespace CecilInspector.Output;
 

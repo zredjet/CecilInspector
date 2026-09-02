@@ -1,7 +1,7 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 using CecilInspector.Cli;
 using CecilInspector.Core;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace CecilInspector.Tests;

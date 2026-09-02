@@ -2,6 +2,16 @@ bin/
 obj/
 .idea/
 .vs/
+.vscode/
 *.user
 TestResults/
 artifacts/
+# Outputs of the documented publish command and the release workflow
+publish/
+dist/
+smoke.txt
+# Coverage and test-run leftovers
+coverage/
+*.trx
+coverage*.xml
+.DS_Store

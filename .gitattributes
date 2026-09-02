@@ -1,0 +1,7 @@
+# Normalize line endings so the tree matches .editorconfig (end_of_line = lf) on every OS,
+# including Windows checkouts with core.autocrlf, and newline-sensitive tests see one shape.
+* text=auto eol=lf
+*.png binary
+*.dll binary
+*.exe binary
+*.zip binary

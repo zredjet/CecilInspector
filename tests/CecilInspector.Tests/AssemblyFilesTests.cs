@@ -84,6 +84,7 @@ public sealed class AssemblyFilesTests
         var root = temp.CreateSubdirectory("root");
         var target = temp.CreateSubdirectory("target");
         File.Copy(ThisAssembly, Path.Combine(target, "target.dll"));
+        SymbolicLinks.SkipUnlessSupported(temp);
         Directory.CreateSymbolicLink(Path.Combine(root, "linked"), target);
 
         var result = AssemblyFiles.DiscoverDetailed(root, true);
@@ -115,6 +116,7 @@ public sealed class AssemblyFilesTests
         var outside = temp.CreateSubdirectory("outside");
         var target = Path.Combine(outside, "target.dll");
         File.Copy(ThisAssembly, target);
+        SymbolicLinks.SkipUnlessSupported(temp);
         File.CreateSymbolicLink(Path.Combine(root, "linked.dll"), target);
 
         var result = AssemblyFiles.DiscoverDetailed(root, true);
@@ -130,6 +132,7 @@ public sealed class AssemblyFilesTests
         using var temp = new TempDirectory();
         var target = temp.CreateSubdirectory("target");
         var linkedRoot = temp.File("linked-root");
+        SymbolicLinks.SkipUnlessSupported(temp);
         Directory.CreateSymbolicLink(linkedRoot, target);
 
         var error = Assert.Throws<ArgumentException>(() => AssemblyFiles.DiscoverDetailed(linkedRoot, true));

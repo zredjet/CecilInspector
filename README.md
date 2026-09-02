@@ -30,7 +30,7 @@ dotnet run --project src/CecilInspector -- search ./assemblies CustomerService -
 dotnet run --project src/CecilInspector -- --version
 ```
 
-`global.json`で.NET 10 SDKを固定し、`Directory.Build.props`で警告をエラー扱いにしたうえで.NETアナライザーとエディター設定の検証をビルド時に有効化しています。CI（GitHub Actions）はLinux、Windows、macOSでビルドとテストを実行します。
+`global.json`で.NET 10 SDKを固定し、`Directory.Build.props`で警告をエラー扱いにしたうえで.NETアナライザーとエディター設定の検証をビルド時に有効化しています。命名規則とusingの並び順はビルドでは検証されないため、コミット前に`dotnet format CecilInspector.slnx --verify-no-changes`で確認してください。CI（GitHub Actions）はLinux、Windows、macOSでフォーマット検証、ビルド、テスト（カバレッジ収集付き）を実行し、自己完結・単一ファイル版を発行して簡易動作確認まで行います。
 
 配布用の単一実行ファイルを作る場合（例: Windows x64）:
 
@@ -39,7 +39,7 @@ dotnet publish src/CecilInspector -c Release -r win-x64 --self-contained true \
   -p:PublishSingleFile=true
 ```
 
-`v1.2.3`形式のタグをpushすると、GitHub Actionsの`Release`ワークフローがWindows x64向けの自己完結・単一ファイル版を発行し、`cecil-inspector-1.2.3-win-x64.zip`（実行ファイル、LICENSE、README入り）をGitHub Releaseに添付します。バージョン番号はタグから取り、`--version`の表示と一致します。
+`v1.2.3`形式のタグをpushすると、GitHub Actionsの`Release`ワークフローがWindows x64向けの自己完結・単一ファイル版を発行し、`cecil-inspector-1.2.3-win-x64.zip`（実行ファイル、LICENSE、README入り）とそのSHA-256（`.zip.sha256`）をGitHub Releaseに添付します。タグは`src/CecilInspector/CecilInspector.csproj`の`<Version>`と一致している必要があり（不一致ならワークフローが失敗します）、`--version`の表示もこの値です。
 
 ## 検索
 

@@ -29,7 +29,22 @@ csharp_new_line_before_open_brace = all
 csharp_indent_case_contents = true
 csharp_indent_switch_labels = true
 
-# Naming: private fields _camelCase, everything else PascalCase / camelCase
+# Naming: private static readonly fields (caches, formatters, fixtures) are PascalCase,
+# other private fields _camelCase, everything else PascalCase / camelCase.
+# dotnet format enforces these (the build does not), so CI runs --verify-no-changes.
+dotnet_naming_rule.private_static_readonly_pascal.symbols = private_static_readonly_fields
+dotnet_naming_rule.private_static_readonly_pascal.style = pascal_case_style
+dotnet_naming_rule.private_static_readonly_pascal.severity = warning
+dotnet_naming_symbols.private_static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_readonly_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_readonly_fields.required_modifiers = static, readonly
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+dotnet_naming_rule.private_const_pascal.symbols = private_const_fields
+dotnet_naming_rule.private_const_pascal.style = pascal_case_style
+dotnet_naming_rule.private_const_pascal.severity = warning
+dotnet_naming_symbols.private_const_fields.applicable_kinds = field
+dotnet_naming_symbols.private_const_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_const_fields.required_modifiers = const
 dotnet_naming_rule.private_fields_underscore.symbols = private_fields
 dotnet_naming_rule.private_fields_underscore.style = underscore_camel
 dotnet_naming_rule.private_fields_underscore.severity = warning
@@ -40,10 +55,9 @@ dotnet_naming_style.underscore_camel.capitalization = camel_case
 dotnet_naming_style.underscore_camel.required_prefix = _
 
 # Analyzer tuning
-# CA1303/CA1305/CA1310: the tool's messages are intentionally Japanese literals and all
-# string comparisons already pass an explicit StringComparison where it matters.
+# CA1303: the tool's messages are intentionally Japanese literals, not localized resources.
+# CA1305 (IFormatProvider) stays enabled: numbers in diagnostics are formatted invariantly.
 dotnet_diagnostic.CA1303.severity = none
-dotnet_diagnostic.CA1305.severity = none
 # CA1848/CA2254 logging rules do not apply (no ILogger).
 dotnet_diagnostic.CA1848.severity = none
 # CA1031: the per-file loop intentionally catches broad Cecil failures via ExceptionPolicy.

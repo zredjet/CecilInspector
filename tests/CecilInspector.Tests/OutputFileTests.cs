@@ -89,6 +89,7 @@ public sealed class OutputFileTests
         Assert.SkipWhen(OperatingSystem.IsWindows(), "排他ロックにより Windows では一時ファイルを差し替えられない。");
 
         using var temp = new TempDirectory();
+        SymbolicLinks.SkipUnlessSupported(temp);
         var output = temp.File("report.txt");
         var attacker = temp.File("attacker.txt");
         File.WriteAllText(attacker, "attacker-controlled");

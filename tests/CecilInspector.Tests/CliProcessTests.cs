@@ -1,6 +1,8 @@
-using System.Diagnostics;
-using System.Text.RegularExpressions;
+using CecilInspector.Cli;
 using CecilInspector.Core;
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace CecilInspector.Tests;
@@ -82,8 +84,14 @@ public sealed class CliProcessTests
     [Fact]
     public async Task RegexTimeoutIsAnArgumentError()
     {
+        // A 64-character namespace makes the backtracking fallback exceed its 250 ms budget on
+        // any machine; the test assembly's own namespaces are short enough to be speed-dependent.
+        using var temp = new TempDirectory();
+        var assembly = temp.File("LongNamespace.dll");
+        GeneratedAssemblies.WriteTypeInNamespace(assembly, new string('a', 64));
+
         var result = await RunAsync(
-            "search", TestAssembly, "^(?=.)(.+)+Z$", "--kind", "namespace", "--match", "regex", "--symbols", "off");
+            "search", assembly, "^(?=.)(.+)+Z$", "--kind", "namespace", "--match", "regex", "--symbols", "off");
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.StandardOutput);
@@ -114,20 +122,17 @@ public sealed class CliProcessTests
     [Fact]
     public async Task ExistingOutputIsRejectedBeforeSearching()
     {
-        var existing = Path.GetTempFileName();
-        try
-        {
-            var result = await RunAsync(
-                "search", TestAssembly, "Estimate", "--symbols", "off", "--output", existing);
+        using var temp = new TempDirectory();
+        var existing = temp.File("existing.txt");
+        File.WriteAllText(existing, "keep");
 
-            Assert.Equal(2, result.ExitCode);
-            Assert.Empty(result.StandardOutput);
-            Assert.Contains("出力先は既に存在します", result.StandardError, StringComparison.Ordinal);
-        }
-        finally
-        {
-            File.Delete(existing);
-        }
+        var result = await RunAsync(
+            "search", TestAssembly, "Estimate", "--symbols", "off", "--output", existing);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("出力先は既に存在します", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal("keep", File.ReadAllText(existing));
     }
 
     [Fact]
@@ -154,7 +159,7 @@ public sealed class CliProcessTests
         var result = await RunAsync("--version");
 
         Assert.Equal(0, result.ExitCode);
-        Assert.StartsWith("cecil-inspector 0.", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal($"cecil-inspector {CommandLine.VersionText}", result.StandardOutput.TrimEnd());
         Assert.Empty(result.StandardError);
     }
 
@@ -196,7 +201,9 @@ public sealed class CliProcessTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("--max-resultsで変更できます", result.StandardOutput, StringComparison.Ordinal);
         Assert.Equal(1, result.StandardOutput.Split("[definition/").Length - 1);
-        Assert.DoesNotContain("Matches: 1\n", result.StandardOutput, StringComparison.Ordinal);
+        var total = Regex.Match(result.StandardOutput, @"^Matches: (\d+)\r?$", RegexOptions.Multiline);
+        Assert.True(total.Success, result.StandardOutput);
+        Assert.True(int.Parse(total.Groups[1].Value, CultureInfo.InvariantCulture) > 1, total.Value);
     }
 
     [Fact]

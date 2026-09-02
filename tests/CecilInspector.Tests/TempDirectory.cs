@@ -1,3 +1,6 @@
+using Mono.Cecil;
+using Xunit;
+
 namespace CecilInspector.Tests;
 
 /// <summary>
@@ -38,8 +41,16 @@ internal sealed class TempDirectory : IDisposable
 
                 return;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 5)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                if (attempt >= 5)
+                {
+                    // A leaked directory is worth a note, not a failure that would replace the
+                    // assertion message of the test that is already unwinding.
+                    Console.Error.WriteLine($"TempDirectory: {Path} を削除できません: {ex.Message}");
+                    return;
+                }
+
                 // Mono.Cecil does not dispose the PDB stream when a symbol read fails, so on
                 // Windows the file stays locked until the finalizer runs. Finalize and retry.
                 GC.Collect();
@@ -47,5 +58,42 @@ internal sealed class TempDirectory : IDisposable
                 Thread.Sleep(50 * (attempt + 1));
             }
         }
+    }
+}
+
+internal static class SymbolicLinks
+{
+    /// <summary>
+    /// Skips the current test when the account cannot create symbolic links (Windows without
+    /// Developer Mode or SeCreateSymbolicLinkPrivilege), instead of failing it.
+    /// </summary>
+    public static void SkipUnlessSupported(TempDirectory temp)
+    {
+        var probe = temp.File($"symlink-probe-{Guid.NewGuid():N}");
+        try
+        {
+            File.CreateSymbolicLink(probe, temp.Path);
+            File.Delete(probe);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            Assert.Skip($"シンボリックリンクを作成できない: {ex.Message}");
+        }
+    }
+}
+
+internal static class GeneratedAssemblies
+{
+    /// <summary>Writes an assembly containing one empty public class in the given namespace.</summary>
+    public static void WriteTypeInNamespace(string path, string @namespace, string typeName = "Fixture")
+    {
+        using var assembly = AssemblyDefinition.CreateAssembly(
+            new AssemblyNameDefinition(System.IO.Path.GetFileNameWithoutExtension(path), new Version(1, 0)),
+            System.IO.Path.GetFileNameWithoutExtension(path),
+            ModuleKind.Dll);
+        var module = assembly.MainModule;
+        module.Types.Add(new TypeDefinition(
+            @namespace, typeName, TypeAttributes.Public | TypeAttributes.Class, module.TypeSystem.Object));
+        assembly.Write(path);
     }
 }

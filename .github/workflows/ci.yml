@@ -19,6 +19,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       # setup-dotnet installs the exact sdk.version from global.json and ignores rollForward,
@@ -27,10 +28,32 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - run: dotnet restore CecilInspector.slnx
+      # Naming and using-directive rules are only enforced by dotnet format, not by the build.
+      - run: dotnet format CecilInspector.slnx --verify-no-changes --no-restore
       - run: dotnet build CecilInspector.slnx -c Release --no-restore
-      - run: dotnet test CecilInspector.slnx -c Release --no-build --logger "trx" --results-directory TestResults
+      - run: >
+          dotnet test CecilInspector.slnx -c Release --no-build --logger "trx"
+          --collect:"XPlat Code Coverage" --results-directory TestResults
+      # The self-contained single-file build has its own resolution path (FrameworkProbe);
+      # publish it for this runner and exercise it so a break does not wait for a release tag.
+      - name: Publish and smoke-test the single-file build
+        shell: bash
+        run: |
+          dotnet publish src/CecilInspector -c Release --use-current-runtime --self-contained true \
+            -p:PublishSingleFile=true -p:DebugType=none -o publish
+          EXE=publish/cecil-inspector
+          [ -f "$EXE.exe" ] && EXE="$EXE.exe"
+          "$EXE" --version | grep -Eqx 'cecil-inspector [0-9]+\.[0-9]+\.[0-9]+'
+          "$EXE" search tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll EstimateTarget \
+            --kind method --match exact --symbols off > smoke.txt
+          grep -qx "Matches: 1" smoke.txt
+          "$EXE" search tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll EstimateTarget \
+            --kind method --match exact --scope references --format msbuild > smoke-msbuild.txt
+          grep -Eq '^.+\([0-9]+,[0-9]+\): info CI0002: ' smoke-msbuild.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-${{ matrix.os }}
           path: TestResults
+          if-no-files-found: error
+          retention-days: 14
