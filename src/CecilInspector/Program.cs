@@ -49,7 +49,12 @@ try
     var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive);
     CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
     using var reportFile = OutputFile.OpenAtomic(options.OutputPath);
-    var writer = reportFile is null ? Console.Out : new TeeTextWriter(Console.Out, reportFile.Writer);
+    var color = AnsiConsole.ShouldColor(options.Color, Console.IsOutputRedirected, Environment.GetEnvironmentVariable) &&
+                AnsiConsole.TryEnableVirtualTerminal();
+    var style = color ? ReportStyle.Ansi : ReportStyle.None;
+    // The report file is plain text even when the console is colored.
+    var fileWriter = reportFile is null ? null : color ? new AnsiStrippingTextWriter(reportFile.Writer) : reportFile.Writer;
+    var writer = fileWriter is null ? Console.Out : new TeeTextWriter(Console.Out, fileWriter);
 
     IReadOnlyList<ScanError> errors;
     IReadOnlyList<ScanError> warnings;
@@ -59,13 +64,13 @@ try
         case SearchOptions searchOptions:
             {
                 var result = new AssemblySearcher().Search(searchOptions, discovery, cancellation.Token);
-                TextReport.WriteSearch(writer, result, searchOptions);
+                TextReport.WriteSearch(writer, result, searchOptions, style);
                 (errors, warnings, filesSucceeded) = (result.Errors, result.Warnings, result.FilesSucceeded);
                 break;
             }
         case DumpOptions dumpOptions:
             {
-                var result = new MetadataDumper().Dump(dumpOptions, discovery, writer, cancellation.Token);
+                var result = new MetadataDumper(style).Dump(dumpOptions, discovery, writer, cancellation.Token);
                 (errors, warnings, filesSucceeded) = (result.Errors, result.Warnings, result.FilesSucceeded);
                 break;
             }

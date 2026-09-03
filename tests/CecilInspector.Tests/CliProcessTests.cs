@@ -45,6 +45,38 @@ public sealed class CliProcessTests
     }
 
     [Fact]
+    public async Task ColorAlwaysColorsTheConsoleButNeverTheReportFile()
+    {
+        using var temp = new TempDirectory();
+        var output = temp.File("report.txt");
+
+        var result = await RunAsync(
+            "search", TestAssembly, "EstimateTarget", "--kind", "method", "--match", "exact", "--scope", "all",
+            "--color", "always", "--output", output);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("\u001b[36m  assembly: ", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\u001b[33m  in: ", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("\u001b[90m  il: IL_", result.StandardOutput, StringComparison.Ordinal);
+        var file = File.ReadAllText(output);
+        Assert.DoesNotContain('\u001b', file);
+        Assert.Equal(file, result.StandardOutput.Replace("\u001b[0m", "", StringComparison.Ordinal)
+            .Replace("\u001b[36m", "", StringComparison.Ordinal).Replace("\u001b[33m", "", StringComparison.Ordinal)
+            .Replace("\u001b[90m", "", StringComparison.Ordinal).Replace("\u001b[94m", "", StringComparison.Ordinal)
+            .Replace("\u001b[32m", "", StringComparison.Ordinal).Replace("\u001b[35m", "", StringComparison.Ordinal)
+            .Replace("\u001b[1m", "", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RedirectedOutputIsNotColoredByDefault()
+    {
+        var result = await RunAsync("search", TestAssembly, "EstimateTarget", "--kind", "method", "--match", "exact", "--symbols", "off");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain('\u001b', result.StandardOutput);
+    }
+
+    [Fact]
     public async Task QuietPrintsNothingOnStderrWhenThereIsNothingToReport()
     {
         var result = await RunAsync("search", TestAssembly, "EstimateTarget", "--kind", "method", "--symbols", "off", "-q");

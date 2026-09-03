@@ -9,6 +9,8 @@
     <Copyright>Copyright (c) 2026 zredjet</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>Mono.Cecil based metadata and IL search for .NET assemblies without loading them.</Description>
+    <!-- Only for the LibraryImport source generator (console virtual-terminal switch on Windows). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

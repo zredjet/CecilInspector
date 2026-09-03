@@ -35,6 +35,8 @@ public static class CommandLine
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
           --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
+          --color <value>        auto | always | never (既定: auto)
+                                 コンソール出力を色分けする (text形式のみ、--output のファイルは無色)
 
         dump options:
           --include-il           メソッド本体のIL命令も出力する
@@ -43,6 +45,7 @@ public static class CommandLine
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ逐次保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
           --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
+          --color <value>        auto | always | never (既定: auto)
 
         例:
           cecil-inspector search ./bin CustomerService --kind type,method
@@ -55,12 +58,12 @@ public static class CommandLine
     private static readonly HashSet<string> SearchOptionNames = new(StringComparer.Ordinal)
     {
         "--kind", "--kinds", "--scope", "--match", "--symbols", "--format", "--case-sensitive",
-        "--no-recursive", "--max-results", "--output", "-o", "--reference-path", "--quiet", "-q",
+        "--no-recursive", "--max-results", "--output", "-o", "--reference-path", "--quiet", "-q", "--color",
     };
 
     private static readonly HashSet<string> DumpOptionNames = new(StringComparer.Ordinal)
     {
-        "--include-il", "--no-recursive", "--symbols", "--output", "-o", "--reference-path", "--quiet", "-q",
+        "--include-il", "--no-recursive", "--symbols", "--output", "-o", "--reference-path", "--quiet", "-q", "--color",
     };
 
     /// <summary>Product version without the source-revision suffix (the csproj Version, e.g. "1.2.3").</summary>
@@ -114,6 +117,7 @@ public static class CommandLine
         string? output = null;
         var referencePaths = new List<string>();
         var quiet = false;
+        var color = ColorMode.Auto;
 
         var reader = new ArgumentReader(args, 1, SearchOptionNames);
         while (reader.TryNextOption(out var option))
@@ -186,6 +190,13 @@ public static class CommandLine
                     }
 
                     quiet = true;
+                    break;
+                case "--color":
+                    if (!reader.TryTakeEnum(out color))
+                    {
+                        return ParseResult.Failure("--colorには auto, always, never を指定してください。");
+                    }
+
                     break;
                 case "--max-results":
                     if (!reader.TryTakeValue(out var maxText))
@@ -274,7 +285,8 @@ public static class CommandLine
             output,
             referencePaths,
             format,
-            quiet));
+            quiet,
+            color));
     }
 
     private static ParseResult ParseDump(string[] args)
@@ -285,6 +297,7 @@ public static class CommandLine
         string? output = null;
         var referencePaths = new List<string>();
         var quiet = false;
+        var color = ColorMode.Auto;
 
         var reader = new ArgumentReader(args, 1, DumpOptionNames);
         while (reader.TryNextOption(out var option))
@@ -321,6 +334,13 @@ public static class CommandLine
                     }
 
                     quiet = true;
+                    break;
+                case "--color":
+                    if (!reader.TryTakeEnum(out color))
+                    {
+                        return ParseResult.Failure("--colorには auto, always, never を指定してください。");
+                    }
+
                     break;
                 case "--symbols":
                     if (!reader.TryTakeEnum(out symbolMode))
@@ -360,7 +380,7 @@ public static class CommandLine
         }
 
         return ParseResult.Success(new DumpOptions(
-            reader.Positionals[0], recursive, includeIl, symbolMode, output, referencePaths, quiet));
+            reader.Positionals[0], recursive, includeIl, symbolMode, output, referencePaths, quiet, color));
     }
 
     private static string UnknownOptionMessage(string token, bool hintSeparator)

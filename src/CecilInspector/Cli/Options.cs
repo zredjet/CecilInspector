@@ -45,16 +45,27 @@ public enum ReportFormat
     MsBuild,
 }
 
+/// <summary>When the console report is colored. The --output file is never colored.</summary>
+public enum ColorMode
+{
+    /// <summary>Color when stdout is a terminal, NO_COLOR is unset and TERM is not "dumb".</summary>
+    Auto,
+    Always,
+    Never,
+}
+
 /// <param name="Quiet">
 /// Suppress the per-file 警告/情報 lines on stderr (one summary line remains). The exit code and
 /// the report's error count are unaffected, so automation still sees an incomplete result.
 /// </param>
+/// <param name="Color">Whether the console report gets ANSI colors.</param>
 public abstract record AppOptions(
     string InputPath,
     bool Recursive,
     string? OutputPath,
     IReadOnlyList<string> ReferencePaths,
-    bool Quiet = false);
+    bool Quiet = false,
+    ColorMode Color = ColorMode.Auto);
 
 public sealed record SearchOptions(
     string InputPath,
@@ -69,7 +80,8 @@ public sealed record SearchOptions(
     string? OutputPath,
     IReadOnlyList<string> ReferencePaths,
     ReportFormat Format = ReportFormat.Text,
-    bool Quiet = false) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet);
+    bool Quiet = false,
+    ColorMode Color = ColorMode.Auto) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet, Color);
 
 public sealed record DumpOptions(
     string InputPath,
@@ -78,7 +90,8 @@ public sealed record DumpOptions(
     SymbolMode SymbolMode,
     string? OutputPath,
     IReadOnlyList<string> ReferencePaths,
-    bool Quiet = false) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet);
+    bool Quiet = false,
+    ColorMode Color = ColorMode.Auto) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet, Color);
 
 /// <param name="Options">Parsed command, or null for help/version/errors.</param>
 /// <param name="Error">Diagnostic for an invalid invocation; null means help or version was requested.</param>

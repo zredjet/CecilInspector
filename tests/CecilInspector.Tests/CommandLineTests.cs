@@ -292,6 +292,26 @@ public sealed class CommandLineTests
         Assert.Contains("値を取りません", result.Error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("search", "a.dll", "Save", "--color", "always")]
+    [InlineData("search", "a.dll", "Save", "--color=ALWAYS")]
+    [InlineData("dump", "a.dll", "--color", "always")]
+    public void ColorParsesForBothCommands(params string[] args)
+    {
+        Assert.Equal(ColorMode.Always, CommandLine.Parse(args).Options!.Color);
+    }
+
+    [Fact]
+    public void ColorDefaultsToAutoAndRejectsUnknownValues()
+    {
+        Assert.Equal(ColorMode.Auto, CommandLine.Parse(["search", "a.dll", "Save"]).Options!.Color);
+        Assert.Equal(ColorMode.Never, CommandLine.Parse(["dump", "a.dll", "--color", "never"]).Options!.Color);
+
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--color", "rainbow"]);
+        Assert.False(result.IsSuccess);
+        Assert.Contains("--colorには auto, always, never", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ShortOutputAliasAndSearchFlagsParse()
     {

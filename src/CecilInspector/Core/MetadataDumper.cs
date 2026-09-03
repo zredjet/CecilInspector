@@ -7,6 +7,18 @@ namespace CecilInspector.Core;
 
 public sealed class MetadataDumper
 {
+    private readonly ReportStyle _style;
+
+    public MetadataDumper()
+        : this(ReportStyle.None)
+    {
+    }
+
+    internal MetadataDumper(ReportStyle style)
+    {
+        _style = style;
+    }
+
     public DumpResult Dump(
         DumpOptions options,
         AssemblyDiscoveryResult discovery,
@@ -84,15 +96,15 @@ public sealed class MetadataDumper
         return Dump(options, discovery, writer);
     }
 
-    private static void AppendModule(
+    private void AppendModule(
         TextWriter writer,
         ModuleDefinition module,
         string file,
         bool includeIl,
         CancellationToken cancellationToken)
     {
-        writer.WriteLine($"Assembly: {TextSanitizer.Escape(module.Assembly?.Name.FullName ?? "(netmodule)")}");
-        writer.WriteLine($"File: {TextSanitizer.Escape(file)}");
+        writer.WriteLine(_style.Apply(ReportPart.Symbol, $"Assembly: {TextSanitizer.Escape(module.Assembly?.Name.FullName ?? "(netmodule)")}"));
+        writer.WriteLine(_style.Apply(ReportPart.Assembly, $"File: {TextSanitizer.Escape(file)}"));
         writer.WriteLine($"Module: {TextSanitizer.Escape(module.Name)}");
         writer.WriteLine($"Runtime: {TextSanitizer.Escape(module.RuntimeVersion)}");
         writer.WriteLine($"Architecture: {module.Architecture}");
@@ -117,7 +129,7 @@ public sealed class MetadataDumper
         writer.WriteLine();
     }
 
-    private static void AppendTypes(
+    private void AppendTypes(
         TextWriter writer,
         IEnumerable<TypeDefinition> roots,
         bool includeIl,
@@ -136,9 +148,9 @@ public sealed class MetadataDumper
         }
     }
 
-    private static void AppendType(TextWriter writer, TypeDefinition type, string indent, bool includeIl)
+    private void AppendType(TextWriter writer, TypeDefinition type, string indent, bool includeIl)
     {
-        writer.WriteLine($"{indent}Type: {TextSanitizer.Escape(CecilFormatting.Type(type))} [{type.Attributes}]");
+        writer.WriteLine($"{indent}{_style.Apply(ReportPart.DumpType, $"Type: {TextSanitizer.Escape(CecilFormatting.Type(type))}")} [{type.Attributes}]");
         if (type.BaseType is not null)
         {
             writer.WriteLine($"{indent}  Base: {TextSanitizer.Escape(CecilFormatting.Type(type.BaseType))}");
@@ -167,8 +179,8 @@ public sealed class MetadataDumper
         foreach (var method in type.Methods)
         {
             var location = DebugLocations.First(method);
-            writer.WriteLine($"{indent}  Method: {TextSanitizer.Escape(CecilFormatting.Method(method))} [{method.Attributes}]" +
-                             (location is null ? string.Empty : $" @ {TextSanitizer.Escape(location.ToString())}"));
+            writer.WriteLine($"{indent}  {_style.Apply(ReportPart.DumpMember, $"Method: {TextSanitizer.Escape(CecilFormatting.Method(method))}")} [{method.Attributes}]" +
+                             (location is null ? string.Empty : _style.Apply(ReportPart.Source, $" @ {TextSanitizer.Escape(location.ToString())}")));
             foreach (var parameter in method.Parameters)
             {
                 writer.WriteLine($"{indent}    Parameter: {TextSanitizer.Escape(parameter.Name)} : " +
@@ -187,7 +199,7 @@ public sealed class MetadataDumper
                     var source = instructionLocation is null
                         ? string.Empty
                         : $" // {TextSanitizer.Escape(instructionLocation.ToString())}";
-                    writer.WriteLine($"{indent}    IL_{instruction.Offset:X4}: {instruction.OpCode}{operand}{source}");
+                    writer.WriteLine(_style.Apply(ReportPart.Il, $"{indent}    IL_{instruction.Offset:X4}: {instruction.OpCode}{operand}{source}"));
                 }
             }
 

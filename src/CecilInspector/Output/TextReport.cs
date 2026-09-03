@@ -1,35 +1,50 @@
 using CecilInspector.Cli;
 using CecilInspector.Core;
+using System.Globalization;
 
 namespace CecilInspector.Output;
 
 public static class TextReport
 {
-    public static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options)
+    public static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options) =>
+        WriteSearch(writer, result, options, ReportStyle.None);
+
+    internal static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options, ReportStyle style)
     {
         writer = new GuardedTextWriter(writer);
         var msBuild = options.Format == ReportFormat.MsBuild;
-        if (!msBuild)
+        if (msBuild)
+        {
+            // Machine-readable: problem matchers must see the bare path(line,col): prefix.
+            style = ReportStyle.None;
+        }
+        else
         {
             // In msbuild format the query is the one header value under the user's control, and a
             // query shaped like "x(1,1): error X: y" would be picked up by problem matchers.
-            writer.WriteLine($"Query: {TextSanitizer.Escape(options.Query)}");
+            writer.WriteLine(
+                style.Apply(ReportPart.Header, "Query: ") +
+                style.Apply(ReportPart.Symbol, TextSanitizer.Escape(options.Query)));
         }
 
-        writer.WriteLine($"Kinds: {options.Kinds} / Scope: {options.Scope} / Match: {options.MatchMode}" +
-                         (options.IgnoreCase ? " (ignore case)" : " (case sensitive)"));
+        writer.WriteLine(style.Apply(
+            ReportPart.Header,
+            $"Kinds: {options.Kinds} / Scope: {options.Scope} / Match: {options.MatchMode}" +
+            (options.IgnoreCase ? " (ignore case)" : " (case sensitive)")));
         var symbols = AssemblySearcher.EffectiveSymbolMode(options) == SymbolMode.Off
             ? "symbols not read"
             : $"{result.FilesWithSymbols} with symbols";
-        writer.WriteLine($"Assemblies: {result.FilesSucceeded}/{result.FilesDiscovered} succeeded, " +
-                         $"{symbols}, {result.Errors.Count} errors");
-        writer.WriteLine($"Matches: {result.TotalMatches}");
+        writer.WriteLine(style.Apply(
+            ReportPart.Header,
+            $"Assemblies: {result.FilesSucceeded}/{result.FilesDiscovered} succeeded, {symbols}, {result.Errors.Count} errors"));
+        writer.WriteLine(
+            "Matches: " + style.Apply(ReportPart.Symbol, result.TotalMatches.ToString(CultureInfo.InvariantCulture)));
         if (result.TotalMatches > 0)
         {
             var breakdown = result.Counts.Select(count =>
                 $"{count.Scope.ToString().ToLowerInvariant()}/" +
                 $"{count.Kind.ToString().ToLowerInvariant()}={count.Count}");
-            writer.WriteLine($"Breakdown: {string.Join(", ", breakdown)}");
+            writer.WriteLine(style.Apply(ReportPart.Header, $"Breakdown: {string.Join(", ", breakdown)}"));
         }
 
         writer.WriteLine();
@@ -42,33 +57,41 @@ public static class TextReport
             }
             else
             {
-                WriteTextHit(writer, hit);
+                WriteTextHit(writer, hit, style);
             }
         }
 
         if (result.TotalMatches > result.Hits.Count)
         {
-            writer.WriteLine($"... {result.TotalMatches - result.Hits.Count}件を省略しました。--max-resultsで変更できます。");
+            writer.WriteLine(style.Apply(
+                ReportPart.Note,
+                $"... {result.TotalMatches - result.Hits.Count}件を省略しました。--max-resultsで変更できます。"));
         }
     }
 
-    private static void WriteTextHit(TextWriter writer, SearchHit hit)
+    /// <summary>
+    /// Every line of a hit gets its own color so the eye can separate the symbol from where it
+    /// lives (assembly), who references it (in), where in source (source) and where in IL (il).
+    /// </summary>
+    private static void WriteTextHit(TextWriter writer, SearchHit hit, ReportStyle style)
     {
-        writer.WriteLine($"{Label(hit)} {TextSanitizer.Escape(hit.Symbol)}");
-        writer.WriteLine($"  assembly: {TextSanitizer.Escape(hit.AssemblyPath)}");
+        var labelPart = hit.Scope == HitScope.Definition ? ReportPart.DefinitionLabel : ReportPart.ReferenceLabel;
+        writer.WriteLine(
+            $"{style.Apply(labelPart, Label(hit))} {style.Apply(ReportPart.Symbol, TextSanitizer.Escape(hit.Symbol))}");
+        writer.WriteLine(style.Apply(ReportPart.Assembly, $"  assembly: {TextSanitizer.Escape(hit.AssemblyPath)}"));
         if (hit.Container is not null)
         {
-            writer.WriteLine($"  in: {TextSanitizer.Escape(hit.Container)}");
+            writer.WriteLine(style.Apply(ReportPart.Container, $"  in: {TextSanitizer.Escape(hit.Container)}"));
         }
 
         if (hit.Location is not null)
         {
-            writer.WriteLine($"  source: {TextSanitizer.Escape(hit.Location.ToString())}");
+            writer.WriteLine(style.Apply(ReportPart.Source, $"  source: {TextSanitizer.Escape(hit.Location.ToString())}"));
         }
 
         if (hit.IlOffset is not null)
         {
-            writer.WriteLine($"  il: IL_{hit.IlOffset.Value:X4}");
+            writer.WriteLine(style.Apply(ReportPart.Il, $"  il: IL_{hit.IlOffset.Value:X4}"));
         }
     }
 

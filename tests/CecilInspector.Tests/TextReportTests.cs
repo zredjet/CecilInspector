@@ -102,6 +102,53 @@ public sealed class TextReportTests
     }
 
     [Fact]
+    public void AnsiStyleColorsEachHitLineDifferentlyAndResets()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Save", SearchKinds.Method, SearchScope.All, MatchMode.Exact,
+            false, true, SymbolMode.Off, 10, null, []);
+        var hit = new SearchHit(
+            "in.dll", "In", HitScope.Reference, HitKind.Method, "T::Save() : System.Void",
+            "T::Caller() : System.Void", new SourceLocation("a.cs", 12, 5), 0x1A);
+        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Reference, HitKind.Method, 1)], [], 1, 1, 0, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi);
+
+        var lines = writer.ToString().Split(Environment.NewLine);
+        Assert.Contains("\u001b[35m[reference/method]\u001b[0m \u001b[1mT::Save() : System.Void\u001b[0m", lines);
+        Assert.Contains("\u001b[36m  assembly: in.dll\u001b[0m", lines);
+        Assert.Contains("\u001b[33m  in: T::Caller() : System.Void\u001b[0m", lines);
+        Assert.Contains("\u001b[94m  source: a.cs:12:5\u001b[0m", lines);
+        Assert.Contains("\u001b[90m  il: IL_001A\u001b[0m", lines);
+    }
+
+    [Fact]
+    public void MsBuildFormatIsNeverColored()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Save", SearchKinds.Method, SearchScope.All, MatchMode.Exact,
+            true, true, SymbolMode.Auto, 10, null, [], ReportFormat.MsBuild);
+        var hit = new SearchHit(
+            "in.dll", "In", HitScope.Definition, HitKind.Method, "T::Save() : System.Void",
+            null, new SourceLocation("a.cs", 30, 0), null);
+        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Definition, HitKind.Method, 1)], [], 1, 1, 1, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi);
+
+        Assert.DoesNotContain('\u001b', writer.ToString());
+    }
+
+    [Fact]
+    public void NoneStyleLeavesTextUntouched()
+    {
+        Assert.Equal("plain", ReportStyle.None.Apply(ReportPart.Assembly, "plain"));
+        Assert.False(ReportStyle.None.IsEnabled);
+        Assert.Equal("", ReportStyle.Ansi.Apply(ReportPart.Assembly, ""));
+    }
+
+    [Fact]
     public void EscapesSymbolsAndOmitsFooterWhenNothingWasDropped()
     {
         var options = new SearchOptions(
