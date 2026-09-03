@@ -211,7 +211,9 @@ public sealed class FrameworkProbeTests
 
         var directories = FrameworkProbe.ComputeDirectories(Env(("DOTNET_ROOT", root)), OSPlatform.Linux, runtime);
 
-        Assert.Equal([runtime, shared], directories);
+        // The well-known install roots of the machine (e.g. /usr/share/dotnet on a Linux CI
+        // runner) may follow; the runtime and DOTNET_ROOT must come first, in that order.
+        Assert.Equal([runtime, shared], directories.Take(2));
     }
 
     [Fact]
