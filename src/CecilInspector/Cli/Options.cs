@@ -45,11 +45,16 @@ public enum ReportFormat
     MsBuild,
 }
 
+/// <param name="Quiet">
+/// Suppress the per-file 警告/情報 lines on stderr (one summary line remains). The exit code and
+/// the report's error count are unaffected, so automation still sees an incomplete result.
+/// </param>
 public abstract record AppOptions(
     string InputPath,
     bool Recursive,
     string? OutputPath,
-    IReadOnlyList<string> ReferencePaths);
+    IReadOnlyList<string> ReferencePaths,
+    bool Quiet = false);
 
 public sealed record SearchOptions(
     string InputPath,
@@ -63,7 +68,8 @@ public sealed record SearchOptions(
     int MaxResults,
     string? OutputPath,
     IReadOnlyList<string> ReferencePaths,
-    ReportFormat Format = ReportFormat.Text) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
+    ReportFormat Format = ReportFormat.Text,
+    bool Quiet = false) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet);
 
 public sealed record DumpOptions(
     string InputPath,
@@ -71,7 +77,8 @@ public sealed record DumpOptions(
     bool IncludeIl,
     SymbolMode SymbolMode,
     string? OutputPath,
-    IReadOnlyList<string> ReferencePaths) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths);
+    IReadOnlyList<string> ReferencePaths,
+    bool Quiet = false) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet);
 
 /// <param name="Options">Parsed command, or null for help/version/errors.</param>
 /// <param name="Error">Diagnostic for an invalid invocation; null means help or version was requested.</param>

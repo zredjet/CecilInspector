@@ -34,6 +34,7 @@ public static class CommandLine
           --no-recursive         フォルダのサブディレクトリを検索しない
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
+          --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
 
         dump options:
           --include-il           メソッド本体のIL命令も出力する
@@ -41,6 +42,7 @@ public static class CommandLine
           --no-recursive         フォルダのサブディレクトリを走査しない
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ逐次保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
+          --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
 
         例:
           cecil-inspector search ./bin CustomerService --kind type,method
@@ -53,12 +55,12 @@ public static class CommandLine
     private static readonly HashSet<string> SearchOptionNames = new(StringComparer.Ordinal)
     {
         "--kind", "--kinds", "--scope", "--match", "--symbols", "--format", "--case-sensitive",
-        "--no-recursive", "--max-results", "--output", "-o", "--reference-path",
+        "--no-recursive", "--max-results", "--output", "-o", "--reference-path", "--quiet", "-q",
     };
 
     private static readonly HashSet<string> DumpOptionNames = new(StringComparer.Ordinal)
     {
-        "--include-il", "--no-recursive", "--symbols", "--output", "-o", "--reference-path",
+        "--include-il", "--no-recursive", "--symbols", "--output", "-o", "--reference-path", "--quiet", "-q",
     };
 
     /// <summary>Product version without the source-revision suffix (the csproj Version, e.g. "1.2.3").</summary>
@@ -111,6 +113,7 @@ public static class CommandLine
         var maxResults = 1000;
         string? output = null;
         var referencePaths = new List<string>();
+        var quiet = false;
 
         var reader = new ArgumentReader(args, 1, SearchOptionNames);
         while (reader.TryNextOption(out var option))
@@ -175,6 +178,14 @@ public static class CommandLine
                     }
 
                     recursive = false;
+                    break;
+                case "--quiet" or "-q":
+                    if (reader.HasInlineValue)
+                    {
+                        return ValueNotAllowed(option);
+                    }
+
+                    quiet = true;
                     break;
                 case "--max-results":
                     if (!reader.TryTakeValue(out var maxText))
@@ -262,7 +273,8 @@ public static class CommandLine
             maxResults,
             output,
             referencePaths,
-            format));
+            format,
+            quiet));
     }
 
     private static ParseResult ParseDump(string[] args)
@@ -272,6 +284,7 @@ public static class CommandLine
         var symbolMode = SymbolMode.Auto;
         string? output = null;
         var referencePaths = new List<string>();
+        var quiet = false;
 
         var reader = new ArgumentReader(args, 1, DumpOptionNames);
         while (reader.TryNextOption(out var option))
@@ -300,6 +313,14 @@ public static class CommandLine
                     }
 
                     recursive = false;
+                    break;
+                case "--quiet" or "-q":
+                    if (reader.HasInlineValue)
+                    {
+                        return ValueNotAllowed(option);
+                    }
+
+                    quiet = true;
                     break;
                 case "--symbols":
                     if (!reader.TryTakeEnum(out symbolMode))
@@ -339,7 +360,7 @@ public static class CommandLine
         }
 
         return ParseResult.Success(new DumpOptions(
-            reader.Positionals[0], recursive, includeIl, symbolMode, output, referencePaths));
+            reader.Positionals[0], recursive, includeIl, symbolMode, output, referencePaths, quiet));
     }
 
     private static string UnknownOptionMessage(string token, bool hintSeparator)
@@ -417,6 +438,7 @@ public static class CommandLine
         private static readonly HashSet<string> RepeatableOptions = new(StringComparer.Ordinal)
         {
             "--kind", "--kinds", "--reference-path", "--case-sensitive", "--no-recursive", "--include-il",
+            "--quiet", "-q",
         };
 
         private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
@@ -477,7 +499,12 @@ public static class CommandLine
         public bool IsRepeated(string option, out string error)
         {
             error = string.Empty;
-            var canonical = option == "-o" ? "--output" : option;
+            var canonical = option switch
+            {
+                "-o" => "--output",
+                "-q" => "--quiet",
+                _ => option,
+            };
             if (RepeatableOptions.Contains(canonical) || canonical == HelpOption || _seen.Add(canonical))
             {
                 return false;

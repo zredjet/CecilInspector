@@ -29,6 +29,34 @@ public sealed class CliProcessTests
     [Theory]
     [InlineData("search")]
     [InlineData("dump")]
+    public async Task QuietReplacesDiagnosticsWithOneSummaryLineAndKeepsTheExitCode(string command)
+    {
+        using var temp = new TempDirectory();
+        File.Copy(TestAssembly, temp.File("good.dll"));
+        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        string[] positional = command == "search" ? ["search", temp.Path, "Estimate"] : ["dump", temp.Path];
+
+        var result = await RunAsync([.. positional, "--symbols", "off", "--quiet"]);
+
+        Assert.Equal(3, result.ExitCode);
+        var line = Assert.Single(result.StandardError.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.StartsWith("警告: 1 件の警告と 0 件の情報を --quiet で省略しました。", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("bad.dll", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task QuietPrintsNothingOnStderrWhenThereIsNothingToReport()
+    {
+        var result = await RunAsync("search", TestAssembly, "EstimateTarget", "--kind", "method", "--symbols", "off", "-q");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.StandardError);
+        Assert.Contains("Matches: 1", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("search")]
+    [InlineData("dump")]
     public async Task SubcommandHelpExitsSuccessfully(string command)
     {
         var result = await RunAsync(command, "--help");

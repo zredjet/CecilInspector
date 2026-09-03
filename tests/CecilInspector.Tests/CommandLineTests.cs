@@ -268,6 +268,30 @@ public sealed class CommandLineTests
         Assert.Contains("dumpには入力パスが必要", result.Error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("search", "a.dll", "Save", "--quiet")]
+    [InlineData("search", "-q", "a.dll", "Save")]
+    [InlineData("dump", "a.dll", "--quiet")]
+    [InlineData("dump", "a.dll", "-q", "-q")]
+    public void QuietParsesForBothCommands(params string[] args)
+    {
+        var result = CommandLine.Parse(args);
+
+        Assert.NotNull(result.Options);
+        Assert.True(result.Options.Quiet);
+    }
+
+    [Fact]
+    public void QuietDefaultsToFalseAndTakesNoValue()
+    {
+        Assert.False(CommandLine.Parse(["search", "a.dll", "Save"]).Options!.Quiet);
+        Assert.False(CommandLine.Parse(["dump", "a.dll"]).Options!.Quiet);
+
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--quiet=true"]);
+        Assert.False(result.IsSuccess);
+        Assert.Contains("値を取りません", result.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void ShortOutputAliasAndSearchFlagsParse()
     {

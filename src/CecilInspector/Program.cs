@@ -75,8 +75,16 @@ try
 
     writer.Flush();
     reportFile?.Commit();
-    WriteDiagnostics(warnings, "情報");
-    WriteDiagnostics(errors, "警告");
+    if (options.Quiet)
+    {
+        WriteDiagnosticSummary(errors.Count, warnings.Count);
+    }
+    else
+    {
+        WriteDiagnostics(warnings, "情報");
+        WriteDiagnostics(errors, "警告");
+    }
+
     return ExitCode(filesSucceeded, errors.Count);
 }
 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -102,6 +110,22 @@ static int ExitCode(int filesSucceeded, int errorCount) => errorCount switch
     _ when filesSucceeded == 0 => 2,
     _ => 3,
 };
+
+/// <summary>
+/// With --quiet the per-file lines are replaced by one line, so an incomplete result is still
+/// visible on stderr next to the exit code.
+/// </summary>
+static void WriteDiagnosticSummary(int errorCount, int warningCount)
+{
+    if (errorCount == 0 && warningCount == 0)
+    {
+        return;
+    }
+
+    Console.Error.WriteLine(
+        $"警告: {errorCount} 件の警告と {warningCount} 件の情報を --quiet で省略しました。" +
+        "詳細は --quiet を外すか CECIL_INSPECTOR_DEBUG=1 で確認できます。");
+}
 
 /// <summary>
 /// Prints one line per diagnostic. Entries that made the result incomplete (and set the exit
