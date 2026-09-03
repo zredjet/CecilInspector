@@ -313,6 +313,36 @@ public sealed class CommandLineTests
     }
 
     [Fact]
+    public void ParallelParsesAndDefaultsToAuto()
+    {
+        Assert.Equal(0, CommandLine.Parse(["search", "a.dll", "Save"]).Options is SearchOptions auto ? auto.Parallelism : -1);
+        Assert.Equal(4, Assert.IsType<SearchOptions>(CommandLine.Parse(["search", "a.dll", "Save", "--parallel", "4"]).Options).Parallelism);
+        Assert.Equal(1, Assert.IsType<SearchOptions>(CommandLine.Parse(["search", "a.dll", "Save", "--parallel=1"]).Options).Parallelism);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-2")]
+    [InlineData("many")]
+    [InlineData("")]
+    public void InvalidParallelIsRejected(string value)
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--parallel", value]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("--parallelには1以上の整数", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DumpDoesNotAcceptParallel()
+    {
+        var result = CommandLine.Parse(["dump", "a.dll", "--parallel", "2"]);
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("不明なオプション", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShortOutputAliasAndSearchFlagsParse()
     {
         var result = CommandLine.Parse([

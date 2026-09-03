@@ -11,6 +11,9 @@
     <Description>Mono.Cecil based metadata and IL search for .NET assemblies without loading them.</Description>
     <!-- Only for the LibraryImport source generator (console virtual-terminal switch on Windows). -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- A batch tool: background GC only adds overhead to an allocation-heavy scan, and
+         non-concurrent collections finish sooner (measured ~20% on a parallel reference search). -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>

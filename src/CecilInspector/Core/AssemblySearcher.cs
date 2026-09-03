@@ -27,63 +27,75 @@ public sealed class AssemblySearcher
         var hits = new SearchHitCollector(options.MaxResults);
         var errors = new List<ScanError>(discovery.Errors);
         var warnings = new List<ScanError>();
-        var resolutionDiagnostics = new ResolutionDiagnostics(errors);
         var succeeded = 0;
         var withSymbols = 0;
         var symbolMode = EffectiveSymbolMode(options);
         using var frameworkResolver = CecilResolverFactory.CreateFrameworkResolver();
+        var resolutions = new MemberResolutionCache(frameworkResolver);
 
-        foreach (var file in files)
+        // Files are independent, so they are scanned in parallel and their outcomes merged in
+        // input order, which keeps the report identical to a sequential run. Each file stages
+        // its own hits, diagnostics and resolution failures; only the framework resolver is
+        // shared (it locks), so memory grows with the degree of parallelism, not the file count.
+        var outcomes = new FileOutcome[files.Count];
+        var retained = new int[files.Count];
+        Array.Fill(retained, -1);
+
+        FileOutcome Scan(int index)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var resolver = CecilResolverFactory.Create(
-                file, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
+            var outcome = ScanFile(
+                files[index],
+                RemainingCapacity(options.MaxResults, retained, index),
+                options,
+                matcher,
+                symbolMode,
+                referenceDirectories,
+                discovery,
+                frameworkResolver,
+                resolutions,
+                cancellationToken);
+            Volatile.Write(ref retained[index], outcome.Hits.Hits.Count);
+            return outcome;
+        }
 
-            // Hits are staged per file and merged whether or not the file completes: a failure
-            // part-way through still reports what was found before it (the file is listed as an
-            // error and the exit code says the result is incomplete). The stage only needs the
-            // capacity the report can still show, so files past the --max-results limit do not
-            // materialize containers and locations that would be dropped on merge.
-            var fileHits = new SearchHitCollector(hits.RemainingCapacity);
+        var parallelism = EffectiveParallelism(options, files.Count);
+        if (parallelism <= 1)
+        {
+            for (var index = 0; index < files.Count; index++)
+            {
+                outcomes[index] = Scan(index);
+            }
+        }
+        else
+        {
             try
             {
-                var fileHasSymbols = false;
-                using (var module = CecilModuleReader.Read(file, symbolMode, resolver, out var symbolWarning))
-                {
-                    if (symbolWarning is not null)
-                    {
-                        warnings.Add(new ScanError(file, symbolWarning));
-                    }
+                Parallel.For(
+                    0,
+                    files.Count,
+                    new ParallelOptions { MaxDegreeOfParallelism = parallelism, CancellationToken = cancellationToken },
+                    index => outcomes[index] = Scan(index));
+            }
+            catch (AggregateException ex) when (ex.InnerExceptions.Count == 1)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw();
+            }
+        }
 
-                    SearchModule(module, file, options, matcher, fileHits, resolutionDiagnostics, cancellationToken);
-                    if (discovery.InputIsFile)
-                    {
-                        SecondaryModules.ForEach(
-                            module,
-                            file,
-                            (secondary, moduleFile) => SearchModule(
-                                secondary, moduleFile, options, matcher, fileHits, resolutionDiagnostics, cancellationToken),
-                            errors.Add,
-                            cancellationToken);
-                    }
-
-                    fileHasSymbols = module.HasSymbols;
-                }
-
+        foreach (var outcome in outcomes)
+        {
+            hits.Merge(outcome.Hits);
+            errors.AddRange(outcome.Errors);
+            warnings.AddRange(outcome.Warnings);
+            if (outcome.Succeeded)
+            {
                 succeeded++;
-                if (fileHasSymbols)
-                {
-                    withSymbols++;
-                }
             }
-            catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
+
+            if (outcome.HasSymbols)
             {
-                errors.Add(new ScanError(file, ex.Message, ex));
-            }
-            finally
-            {
-                hits.Merge(fileHits);
-                resolutionDiagnostics.Flush();
+                withSymbols++;
             }
         }
 
@@ -98,6 +110,107 @@ public sealed class AssemblySearcher
             warnings);
     }
 
+    /// <summary>
+    /// The degree of parallelism: the explicit option, otherwise the processor count capped at
+    /// 8 so peak memory (one image copy plus Cecil's objects per concurrent file) stays modest
+    /// on large machines; never more than there are files.
+    /// </summary>
+    internal static int EffectiveParallelism(SearchOptions options, int fileCount)
+    {
+        var requested = options.Parallelism > 0 ? options.Parallelism : Math.Min(Environment.ProcessorCount, 8);
+        return Math.Max(1, Math.Min(requested, fileCount));
+    }
+
+    /// <summary>
+    /// How many hits a file's stage still needs to keep so the report can show them: the limit
+    /// minus what earlier files retained. Files that are still running count as zero, which can
+    /// only over-estimate (their hits are merged first and drop the excess), never lose a hit.
+    /// </summary>
+    private static int RemainingCapacity(int maxResults, int[] retained, int index)
+    {
+        var used = 0;
+        for (var earlier = 0; earlier < index; earlier++)
+        {
+            var count = Volatile.Read(ref retained[earlier]);
+            if (count > 0)
+            {
+                used += count;
+            }
+        }
+
+        return Math.Max(0, maxResults - used);
+    }
+
+    private static FileOutcome ScanFile(
+        string file,
+        int capacity,
+        SearchOptions options,
+        SearchMatcher matcher,
+        SymbolMode symbolMode,
+        IReadOnlyList<string> referenceDirectories,
+        AssemblyDiscoveryResult discovery,
+        IdentityAwareAssemblyResolver frameworkResolver,
+        MemberResolutionCache resolutions,
+        CancellationToken cancellationToken)
+    {
+        // Hits are staged per file and merged whether or not the file completes: a failure
+        // part-way through still reports what was found before it (the file is listed as an
+        // error and the exit code says the result is incomplete). The stage only needs the
+        // capacity the report can still show, so files past the --max-results limit do not
+        // materialize containers and locations that would be dropped on merge.
+        var fileHits = new SearchHitCollector(capacity);
+        var errors = new List<ScanError>();
+        var warnings = new List<ScanError>();
+        var resolutionDiagnostics = new ResolutionDiagnostics(errors);
+        var succeeded = false;
+        var hasSymbols = false;
+        using var resolver = CecilResolverFactory.Create(
+            file, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
+        try
+        {
+            using (var module = CecilModuleReader.Read(file, symbolMode, resolver, out var symbolWarning))
+            {
+                if (symbolWarning is not null)
+                {
+                    warnings.Add(new ScanError(file, symbolWarning));
+                }
+
+                SearchModule(module, file, options, matcher, fileHits, resolutionDiagnostics, resolutions, cancellationToken);
+                if (discovery.InputIsFile)
+                {
+                    SecondaryModules.ForEach(
+                        module,
+                        file,
+                        (secondary, moduleFile) => SearchModule(
+                            secondary, moduleFile, options, matcher, fileHits, resolutionDiagnostics, resolutions, cancellationToken),
+                        errors.Add,
+                        cancellationToken);
+                }
+
+                hasSymbols = module.HasSymbols;
+            }
+
+            succeeded = true;
+        }
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
+        {
+            errors.Add(new ScanError(file, ex.Message, ex));
+        }
+        finally
+        {
+            resolutionDiagnostics.Flush();
+        }
+
+        return new FileOutcome(fileHits, errors, warnings, succeeded, hasSymbols);
+    }
+
+    private sealed record FileOutcome(
+        SearchHitCollector Hits,
+        List<ScanError> Errors,
+        List<ScanError> Warnings,
+        bool Succeeded,
+        bool HasSymbols);
+
     private static void SearchModule(
         ModuleDefinition module,
         string file,
@@ -105,11 +218,12 @@ public sealed class AssemblySearcher
         SearchMatcher matcher,
         SearchHitCollector hits,
         ResolutionDiagnostics resolutionDiagnostics,
+        MemberResolutionCache resolutions,
         CancellationToken cancellationToken)
     {
         var assemblyName = module.Assembly?.Name.FullName ?? module.Name;
         var seenNamespaces = new HashSet<string>(StringComparer.Ordinal);
-        var scratch = new ReferenceScratch(file, options, resolutionDiagnostics);
+        var scratch = new ReferenceScratch(file, options, resolutionDiagnostics, resolutions);
         foreach (var type in AllTypes(module.Types))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -139,7 +253,7 @@ public sealed class AssemblySearcher
             seenNamespaces.Add(type.Namespace) &&
             matcher.IsMatch(type.Namespace))
         {
-            Add(hits, file, assemblyName, HitScope.Definition, HitKind.Namespace, type.Namespace, null, null, null);
+            AddDefinition(hits, file, assemblyName, HitKind.Namespace, type.Namespace, null);
         }
 
         // The declaring type renders identically for every member, so format it once per type.
@@ -153,21 +267,18 @@ public sealed class AssemblySearcher
                 CecilFormatting.WithoutArity(type.Name),
                 CecilFormatting.WithoutArity(declaringType)))
         {
-            Add(hits, file, assemblyName, HitScope.Definition, HitKind.Type, declaringType, null, null, null);
+            AddDefinition(hits, file, assemblyName, HitKind.Type, declaringType, null);
         }
 
         if (options.Kinds.Includes(HitKind.Field))
         {
             foreach (var field in type.Fields)
             {
-                var symbol = CecilFormatting.Field(field, declaringType);
-                if (matcher.IsMatch(
-                        field.Name,
-                        CecilFormatting.MemberName(declaringType, field.Name),
-                        field.FullName,
-                        symbol))
+                if (matcher.IsMemberMatch(
+                        field.Name, field.Name, field.FullName, declaringType, () => CecilFormatting.Field(field, declaringType)))
                 {
-                    Add(hits, file, assemblyName, HitScope.Definition, HitKind.Field, symbol, null, null, null);
+                    AddDefinition(hits, file, assemblyName, HitKind.Field,
+                        CecilFormatting.Field(field, declaringType), null);
                 }
             }
         }
@@ -176,18 +287,16 @@ public sealed class AssemblySearcher
         {
             foreach (var property in type.Properties)
             {
-                var symbol = CecilFormatting.Property(property, declaringType);
-                var logicalName = PropertyLogicalName(property);
-                if (matcher.IsMatch(
+                if (matcher.IsMemberMatch(
                         property.Name,
-                        logicalName,
-                        CecilFormatting.MemberName(declaringType, property.Name),
-                        LogicalMemberName(declaringType, property.Name, logicalName),
+                        PropertyLogicalName(property),
                         property.FullName,
-                        symbol))
+                        declaringType,
+                        () => CecilFormatting.Property(property, declaringType)))
                 {
-                    Add(hits, file, assemblyName, HitScope.Definition, HitKind.Property, symbol, null,
-                        () => DebugLocations.First(property.GetMethod) ?? DebugLocations.First(property.SetMethod), null);
+                    AddDefinition(hits, file, assemblyName, HitKind.Property,
+                        CecilFormatting.Property(property, declaringType),
+                        () => DebugLocations.First(property.GetMethod) ?? DebugLocations.First(property.SetMethod));
                 }
             }
         }
@@ -196,18 +305,16 @@ public sealed class AssemblySearcher
         {
             foreach (var @event in type.Events)
             {
-                var symbol = CecilFormatting.Event(@event, declaringType);
-                var logicalName = EventLogicalName(@event);
-                if (matcher.IsMatch(
+                if (matcher.IsMemberMatch(
                         @event.Name,
-                        logicalName,
-                        CecilFormatting.MemberName(declaringType, @event.Name),
-                        LogicalMemberName(declaringType, @event.Name, logicalName),
+                        EventLogicalName(@event),
                         @event.FullName,
-                        symbol))
+                        declaringType,
+                        () => CecilFormatting.Event(@event, declaringType)))
                 {
-                    Add(hits, file, assemblyName, HitScope.Definition, HitKind.Event, symbol, null,
-                        () => FirstEventLocation(@event), null);
+                    AddDefinition(hits, file, assemblyName, HitKind.Event,
+                        CecilFormatting.Event(@event, declaringType),
+                        () => FirstEventLocation(@event));
                 }
             }
         }
@@ -221,18 +328,15 @@ public sealed class AssemblySearcher
                     continue;
                 }
 
-                var symbol = CecilFormatting.Method(method, declaringType);
-                var logicalName = MethodLogicalName(method);
-                if (matcher.IsMatch(
+                if (matcher.IsMemberMatch(
                         method.Name,
-                        logicalName,
-                        CecilFormatting.MemberName(declaringType, method.Name),
-                        LogicalMemberName(declaringType, method.Name, logicalName),
+                        MethodLogicalName(method),
                         method.FullName,
-                        symbol))
+                        declaringType,
+                        () => CecilFormatting.Method(method, declaringType)))
                 {
-                    Add(hits, file, assemblyName, HitScope.Definition, HitKind.Method,
-                        symbol, null, () => DebugLocations.First(method), null);
+                    AddDefinition(hits, file, assemblyName, HitKind.Method,
+                        CecilFormatting.Method(method, declaringType), () => DebugLocations.First(method));
                 }
             }
         }
@@ -248,54 +352,52 @@ public sealed class AssemblySearcher
         ReferenceScratch scratch)
     {
         var searchTypes = options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace);
+        var searchMembers = options.Kinds.Includes(HitKind.Method) ||
+                            options.Kinds.Includes(HitKind.Property) ||
+                            options.Kinds.Includes(HitKind.Event);
+        var searchFields = options.Kinds.Includes(HitKind.Field);
         foreach (var method in type.Methods.Where(method => method.HasBody))
         {
-            string? container = null;
-            string GetContainer() => container ??= CecilFormatting.Method(DebugLocations.DisplayMethod(method));
-            SequencePointMapper? locations = null;
-            Func<SourceLocation?> LocationOf(Instruction instruction)
-            {
-                SourceLocation? location = null;
-                var resolved = false;
-                return () =>
-                {
-                    if (!resolved)
-                    {
-                        locations ??= DebugLocations.CreateMapper(method);
-                        location = locations.ForInstruction(instruction);
-                        resolved = true;
-                    }
-
-                    return location;
-                };
-            }
-
+            // One object per method carries the lazily rendered container and the sequence-point
+            // mapper; per instruction nothing is allocated unless a hit is retained.
+            var site = new MethodSite(method);
             var body = method.Body;
             foreach (var instruction in body.Instructions)
             {
-                if (instruction.Operand is not (MethodReference or FieldReference or TypeReference or Mono.Cecil.CallSite))
-                {
-                    continue;
-                }
-
-                var getLocation = LocationOf(instruction);
                 switch (instruction.Operand)
                 {
                     case MethodReference target:
-                        SearchMethodReference(target, instruction, file, assemblyName,
-                            GetContainer, getLocation, options, matcher, hits, scratch);
+                        if (searchMembers)
+                        {
+                            SearchMethodReference(target, instruction, file, assemblyName, site, options, matcher, hits, scratch);
+                        }
+
+                        if (searchTypes)
+                        {
+                            SearchTypeTargets(scratch.TypesOf(target), instruction, file, assemblyName, site, options, matcher, hits);
+                        }
+
                         break;
                     case FieldReference target:
-                        SearchFieldReference(target, instruction, file, assemblyName,
-                            GetContainer, getLocation, options, matcher, hits, scratch);
+                        if (searchFields)
+                        {
+                            var entry = scratch.EntryFor(target);
+                            if (matcher.IsMatch(target.Name, entry.QualifiedName, entry.FullName, entry.Symbol))
+                            {
+                                AddReference(hits, file, assemblyName, HitKind.Field, entry.Symbol, site, instruction);
+                            }
+                        }
+
+                        if (searchTypes)
+                        {
+                            SearchTypeTargets(scratch.TypesOf(target), instruction, file, assemblyName, site, options, matcher, hits);
+                        }
+
                         break;
                     case TypeReference target:
                         if (searchTypes)
                         {
-                            scratch.Roots.Clear();
-                            scratch.Roots.Add(target);
-                            SearchTypeReferences(instruction, file, assemblyName,
-                                GetContainer, getLocation, options, matcher, hits, scratch);
+                            SearchTypeTargets(scratch.TypesOf(target), instruction, file, assemblyName, site, options, matcher, hits);
                         }
 
                         break;
@@ -309,8 +411,7 @@ public sealed class AssemblySearcher
                                 scratch.Roots.Add(parameter.ParameterType);
                             }
 
-                            SearchTypeReferences(instruction, file, assemblyName,
-                                GetContainer, getLocation, options, matcher, hits, scratch);
+                            SearchTypeTargets(scratch.ExpandRoots(), instruction, file, assemblyName, site, options, matcher, hits);
                         }
 
                         break;
@@ -326,15 +427,11 @@ public sealed class AssemblySearcher
                 // instruction respectively.
                 foreach (var handler in body.ExceptionHandlers)
                 {
-                    if (handler.CatchType is null || handler.HandlerStart is null)
+                    if (handler.CatchType is not null && handler.HandlerStart is not null)
                     {
-                        continue;
+                        SearchTypeTargets(
+                            scratch.TypesOf(handler.CatchType), handler.HandlerStart, file, assemblyName, site, options, matcher, hits);
                     }
-
-                    scratch.Roots.Clear();
-                    scratch.Roots.Add(handler.CatchType);
-                    SearchTypeReferences(handler.HandlerStart, file, assemblyName,
-                        GetContainer, LocationOf(handler.HandlerStart), options, matcher, hits, scratch);
                 }
 
                 if (body.HasVariables && body.Instructions.Count > 0)
@@ -345,9 +442,7 @@ public sealed class AssemblySearcher
                         scratch.Roots.Add(variable.VariableType);
                     }
 
-                    var first = body.Instructions[0];
-                    SearchTypeReferences(first, file, assemblyName,
-                        GetContainer, LocationOf(first), options, matcher, hits, scratch);
+                    SearchTypeTargets(scratch.ExpandRoots(), body.Instructions[0], file, assemblyName, site, options, matcher, hits);
                 }
             }
 
@@ -361,158 +456,64 @@ public sealed class AssemblySearcher
         Instruction instruction,
         string file,
         string assemblyName,
-        Func<string> getContainer,
-        Func<SourceLocation?> getLocation,
+        MethodSite site,
         SearchOptions options,
         SearchMatcher matcher,
         SearchHitCollector hits,
         ReferenceScratch scratch)
     {
-        if (options.Kinds.Includes(HitKind.Method) ||
-            options.Kinds.Includes(HitKind.Property) ||
-            options.Kinds.Includes(HitKind.Event))
+        var entry = scratch.CandidatesFor(target);
+        foreach (var candidate in entry.Candidates)
         {
-            foreach (var candidate in scratch.CandidatesFor(target))
+            if (options.Kinds.Includes(candidate.Kind) &&
+                matcher.IsMatch(
+                    candidate.MetadataName,
+                    candidate.LogicalName,
+                    candidate.QualifiedName,
+                    candidate.LogicalQualifiedName,
+                    entry.FullName,
+                    candidate.Symbol))
             {
-                if (options.Kinds.Includes(candidate.Kind) &&
-                    matcher.IsMatch(
-                        candidate.MetadataName,
-                        candidate.LogicalName,
-                        candidate.QualifiedName,
-                        candidate.LogicalQualifiedName,
-                        target.FullName,
-                        candidate.Symbol))
-                {
-                    Add(hits, file, assemblyName, HitScope.Reference, candidate.Kind,
-                        candidate.Symbol, getContainer, getLocation, instruction.Offset);
-                }
+                AddReference(hits, file, assemblyName, candidate.Kind, candidate.Symbol, site, instruction);
             }
-        }
-
-        if (options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace))
-        {
-            var roots = scratch.Roots;
-            roots.Clear();
-            roots.Add(target.DeclaringType);
-            roots.Add(target.ReturnType);
-            foreach (var parameter in target.Parameters)
-            {
-                roots.Add(parameter.ParameterType);
-            }
-
-            if (target is GenericInstanceMethod genericMethod)
-            {
-                roots.AddRange(genericMethod.GenericArguments);
-            }
-
-            SearchTypeReferences(instruction, file, assemblyName, getContainer, getLocation, options, matcher, hits, scratch);
-        }
-    }
-
-    private static void SearchFieldReference(
-        FieldReference target,
-        Instruction instruction,
-        string file,
-        string assemblyName,
-        Func<string> getContainer,
-        Func<SourceLocation?> getLocation,
-        SearchOptions options,
-        SearchMatcher matcher,
-        SearchHitCollector hits,
-        ReferenceScratch scratch)
-    {
-        if (options.Kinds.Includes(HitKind.Field))
-        {
-            var symbol = scratch.SymbolFor(target);
-            if (matcher.IsMatch(
-                    target.Name,
-                    CecilFormatting.MemberName(target.DeclaringType, target.Name),
-                    target.FullName,
-                    symbol))
-            {
-                Add(hits, file, assemblyName, HitScope.Reference, HitKind.Field,
-                    symbol, getContainer, getLocation, instruction.Offset);
-            }
-        }
-
-        if (options.Kinds.Includes(HitKind.Type) || options.Kinds.Includes(HitKind.Namespace))
-        {
-            scratch.Roots.Clear();
-            scratch.Roots.Add(target.DeclaringType);
-            scratch.Roots.Add(target.FieldType);
-            SearchTypeReferences(instruction, file, assemblyName, getContainer, getLocation, options, matcher, hits, scratch);
         }
     }
 
     /// <summary>
-    /// Searches every type reachable from <see cref="ReferenceScratch.Roots"/> for one instruction.
-    /// A type whose unscoped name collides with another scope in the same instruction is shown
-    /// with its @Assembly identity so the two remain distinguishable.
+    /// Matches the types reachable from one operand (or handler, or locals signature). The
+    /// targets were expanded and de-duplicated once per member by <see cref="ReferenceScratch"/>,
+    /// including the @Assembly disambiguation of types whose unscoped names collide.
     /// </summary>
-    private static void SearchTypeReferences(
+    private static void SearchTypeTargets(
+        TypeTarget[] targets,
         Instruction instruction,
         string file,
         string assemblyName,
-        Func<string> getContainer,
-        Func<SourceLocation?> getLocation,
+        MethodSite site,
         SearchOptions options,
         SearchMatcher matcher,
-        SearchHitCollector hits,
-        ReferenceScratch scratch)
+        SearchHitCollector hits)
     {
         var searchTypes = options.Kinds.Includes(HitKind.Type);
         var searchNamespaces = options.Kinds.Includes(HitKind.Namespace);
-        if (!searchTypes && !searchNamespaces)
+        foreach (var target in targets)
         {
-            return;
-        }
-
-        scratch.BeginInstruction();
-        foreach (var target in ExpandTypeReferences(scratch.Roots, scratch.ExpansionStack))
-        {
-            if (target is GenericParameter)
-            {
-                continue;
-            }
-
-            var unscoped = CecilFormatting.Type(target);
-            var identity = CecilFormatting.TypeIdentity(target);
-            if (scratch.FirstIdentity.TryAdd(unscoped, identity))
-            {
-                // first occurrence
-            }
-            else if (!string.Equals(scratch.FirstIdentity[unscoped], identity, StringComparison.Ordinal))
-            {
-                scratch.Collisions.Add(unscoped);
-            }
-
-            scratch.Targets.Add((target, unscoped, identity));
-        }
-
-        foreach (var (target, unscoped, identity) in scratch.Targets)
-        {
-            var symbol = scratch.Collisions.Contains(unscoped) ? identity : unscoped;
             if (searchTypes &&
-                scratch.SeenTypes.Add(identity) &&
+                target.FirstOfType &&
                 matcher.IsMatch(
                     target.Name,
-                    target.FullName,
-                    unscoped,
-                    symbol,
-                    CecilFormatting.WithoutArity(target.Name),
-                    CecilFormatting.WithoutArity(unscoped)))
+                    target.Names.FullName,
+                    target.Names.Unscoped,
+                    target.Symbol,
+                    target.Names.NameWithoutArity,
+                    target.Names.UnscopedWithoutArity))
             {
-                Add(hits, file, assemblyName, HitScope.Reference, HitKind.Type,
-                    symbol, getContainer, getLocation, instruction.Offset);
+                AddReference(hits, file, assemblyName, HitKind.Type, target.Symbol, site, instruction);
             }
 
-            if (searchNamespaces &&
-                !string.IsNullOrEmpty(target.Namespace) &&
-                scratch.SeenNamespaces.Add(target.Namespace) &&
-                matcher.IsMatch(target.Namespace))
+            if (searchNamespaces && target.Namespace is not null && matcher.IsMatch(target.Namespace))
             {
-                Add(hits, file, assemblyName, HitScope.Reference, HitKind.Namespace,
-                    target.Namespace, getContainer, getLocation, instruction.Offset);
+                AddReference(hits, file, assemblyName, HitKind.Namespace, target.Namespace, site, instruction);
             }
         }
     }
@@ -564,17 +565,18 @@ public sealed class AssemblySearcher
         }
     }
 
-    private static List<MemberCandidate> ResolveMemberCandidates(
-        MethodReference method,
-        SearchOptions options,
-        string file,
-        ResolutionDiagnostics diagnostics)
+    /// <summary>
+    /// Resolves a method reference to what it denotes (a method, or a property/event through
+    /// MethodSemantics). Pure: the diagnostics for an unresolved dependency are returned, not
+    /// recorded, so the result can be shared by every file that references the same member.
+    /// </summary>
+    private static MemberResolution ResolveMemberCandidates(MethodReference method, SearchOptions options)
     {
         if (method.DeclaringType.IsArray)
         {
             // Get/Set/Address/.ctor on an array type are pseudo-methods the runtime synthesizes;
             // there is no definition to resolve, so their dependency is not missing.
-            return UnresolvedCandidates(method, options);
+            return new MemberResolution(UnresolvedCandidates(method, options), false, null, null);
         }
 
         try
@@ -587,40 +589,83 @@ public sealed class AssemblySearcher
                 if (owner?.Property is { } property)
                 {
                     var logicalName = PropertyLogicalName(property);
-                    return options.Kinds.Includes(HitKind.Property) ? [new MemberCandidate(
-                        HitKind.Property,
-                        property.Name,
-                        logicalName,
-                        CecilFormatting.MemberName(property.DeclaringType, property.Name),
-                        CecilFormatting.MemberName(method.DeclaringType, logicalName),
-                        CecilFormatting.Property(property, method))] : [];
+                    return new MemberResolution(
+                        options.Kinds.Includes(HitKind.Property) ? [new MemberCandidate(
+                            HitKind.Property,
+                            property.Name,
+                            logicalName,
+                            CecilFormatting.MemberName(property.DeclaringType, property.Name),
+                            CecilFormatting.MemberName(method.DeclaringType, logicalName),
+                            CecilFormatting.Property(property, method))] : [],
+                        false,
+                        null,
+                        definition.Module);
                 }
 
                 if (owner?.Event is { } @event)
                 {
                     var logicalName = EventLogicalName(@event);
-                    return options.Kinds.Includes(HitKind.Event) ? [new MemberCandidate(
-                        HitKind.Event,
-                        @event.Name,
-                        logicalName,
-                        CecilFormatting.MemberName(@event.DeclaringType, @event.Name),
-                        CecilFormatting.MemberName(method.DeclaringType, logicalName),
-                        CecilFormatting.Event(@event, method))] : [];
+                    return new MemberResolution(
+                        options.Kinds.Includes(HitKind.Event) ? [new MemberCandidate(
+                            HitKind.Event,
+                            @event.Name,
+                            logicalName,
+                            CecilFormatting.MemberName(@event.DeclaringType, @event.Name),
+                            CecilFormatting.MemberName(method.DeclaringType, logicalName),
+                            CecilFormatting.Event(@event, method))] : [],
+                        false,
+                        null,
+                        definition.Module);
                 }
 
-                return options.Kinds.Includes(HitKind.Method)
-                    ? [MethodCandidate(method, MethodLogicalName(definition))]
-                    : [];
+                return new MemberResolution(
+                    options.Kinds.Includes(HitKind.Method) ? [MethodCandidate(method, MethodLogicalName(definition))] : [],
+                    false,
+                    null,
+                    definition.Module);
             }
 
-            diagnostics.Add(file, method, null);
+            return new MemberResolution(UnresolvedCandidates(method, options), true, null, null);
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
-            diagnostics.Add(file, method, ex);
+            return new MemberResolution(UnresolvedCandidates(method, options), true, AssemblyResolutionDetail.Describe(ex), null);
         }
+    }
 
-        return UnresolvedCandidates(method, options);
+    /// <param name="Unresolved">True when the dependency could not be resolved; the reference is then reported as incomplete.</param>
+    /// <param name="Reason">The resolver's explanation of a failure, when it threw one.</param>
+    /// <param name="DefinitionModule">The module the definition was found in, when it was.</param>
+    private sealed record MemberResolution(
+        IReadOnlyList<MemberCandidate> Candidates,
+        bool Unresolved,
+        string? Reason,
+        ModuleDefinition? DefinitionModule);
+
+    /// <summary>
+    /// Run-wide cache of member resolutions that every file in a folder would repeat: members
+    /// of framework assemblies (resolved through the shared framework resolver) and members of
+    /// dependencies that cannot be resolved at all. Resolving walks the dependency's metadata
+    /// under Cecil's module lock, which the files scanned in parallel would otherwise contend
+    /// for on every reference to the same framework member. The key is the referencing file's
+    /// folder, the dependency's identity and the reference's canonical symbol, which unlike
+    /// Cecil's FullName renders generic parameters by position.
+    /// </summary>
+    private sealed class MemberResolutionCache(IdentityAwareAssemblyResolver frameworkResolver)
+    {
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, MemberResolution> _entries =
+            new(StringComparer.Ordinal);
+
+        public bool TryGet(string key, out MemberResolution resolution) => _entries.TryGetValue(key, out resolution!);
+
+        public void Share(string key, MemberResolution resolution)
+        {
+            if (resolution.Unresolved ||
+                (resolution.DefinitionModule is { } module && ReferenceEquals(module.AssemblyResolver, frameworkResolver)))
+            {
+                _entries.TryAdd(key, resolution);
+            }
+        }
     }
 
     /// <summary>
@@ -729,12 +774,6 @@ public sealed class AssemblySearcher
         }
     }
 
-    /// <summary>The qualified logical name, or null when it would duplicate the metadata name.</summary>
-    private static string? LogicalMemberName(string declaringType, string metadataName, string logicalName) =>
-        string.Equals(metadataName, logicalName, StringComparison.Ordinal)
-            ? null
-            : CecilFormatting.MemberName(declaringType, logicalName);
-
     private static IEnumerable<TypeDefinition> AllTypes(IEnumerable<TypeDefinition> roots)
     {
         var stack = new Stack<TypeDefinition>(roots.Reverse());
@@ -749,25 +788,26 @@ public sealed class AssemblySearcher
         }
     }
 
-    private static void Add(
+    private static void AddDefinition(
         SearchHitCollector hits,
         string file,
         string assemblyName,
-        HitScope scope,
         HitKind kind,
         string symbol,
-        Func<string>? getContainer,
-        Func<SourceLocation?>? getLocation,
-        int? ilOffset) =>
-        hits.Add(scope, kind, () => new SearchHit(
-            file,
-            assemblyName,
-            scope,
-            kind,
-            symbol,
-            getContainer?.Invoke(),
-            getLocation?.Invoke(),
-            ilOffset));
+        Func<SourceLocation?>? getLocation) =>
+        hits.Add(HitScope.Definition, kind, () => new SearchHit(
+            file, assemblyName, HitScope.Definition, kind, symbol, null, getLocation?.Invoke(), null));
+
+    private static void AddReference(
+        SearchHitCollector hits,
+        string file,
+        string assemblyName,
+        HitKind kind,
+        string symbol,
+        MethodSite site,
+        Instruction instruction) =>
+        hits.Add(HitScope.Reference, kind, () => new SearchHit(
+            file, assemblyName, HitScope.Reference, kind, symbol, site.Container, site.LocationOf(instruction), instruction.Offset));
 
     /// <summary>
     /// Symbols are skipped for definition-only searches of namespaces, types and fields, whose
@@ -788,62 +828,277 @@ public sealed class AssemblySearcher
     }
 
     /// <summary>
-    /// Per-module working state for reference searches: caches keyed by Cecil's interned
-    /// reference objects (the same MemberRef/TypeRef instance recurs across instructions), and
-    /// reusable collections so the per-instruction type walk allocates nothing steady-state.
+    /// The per-method state a reference hit needs: the rendered container and the sequence-point
+    /// mapper, both created on first use so a method without hits costs one small object.
     /// </summary>
-    private sealed class ReferenceScratch(string file, SearchOptions options, ResolutionDiagnostics diagnostics)
+    private sealed class MethodSite(MethodDefinition method)
     {
-        private readonly Dictionary<MethodReference, IReadOnlyList<MemberCandidate>> _methodCandidates =
-            new(ReferenceEqualityComparer.Instance);
+        private string? _container;
+        private SequencePointMapper? _locations;
 
-        private readonly Dictionary<FieldReference, string> _fieldSymbols = new(ReferenceEqualityComparer.Instance);
+        public string Container => _container ??= CecilFormatting.Method(DebugLocations.DisplayMethod(method));
 
-        public List<TypeReference> Roots { get; } = new(8);
-
-        public Stack<TypeReference> ExpansionStack { get; } = new(16);
-
-        public List<(TypeReference Type, string Unscoped, string Identity)> Targets { get; } = new(16);
-
-        public Dictionary<string, string> FirstIdentity { get; } = new(StringComparer.Ordinal);
-
-        public HashSet<string> Collisions { get; } = new(StringComparer.Ordinal);
-
-        public HashSet<string> SeenTypes { get; } = new(StringComparer.Ordinal);
-
-        public HashSet<string> SeenNamespaces { get; } = new(StringComparer.Ordinal);
-
-        public IReadOnlyList<MemberCandidate> CandidatesFor(MethodReference method)
+        public SourceLocation? LocationOf(Instruction instruction)
         {
-            if (!_methodCandidates.TryGetValue(method, out var candidates))
-            {
-                candidates = ResolveMemberCandidates(method, options, file, diagnostics);
-                _methodCandidates.Add(method, candidates);
-            }
-
-            return candidates;
-        }
-
-        public string SymbolFor(FieldReference field)
-        {
-            if (!_fieldSymbols.TryGetValue(field, out var symbol))
-            {
-                symbol = CecilFormatting.Field(field);
-                _fieldSymbols.Add(field, symbol);
-            }
-
-            return symbol;
-        }
-
-        public void BeginInstruction()
-        {
-            Targets.Clear();
-            FirstIdentity.Clear();
-            Collisions.Clear();
-            SeenTypes.Clear();
-            SeenNamespaces.Clear();
+            _locations ??= DebugLocations.CreateMapper(method);
+            return _locations.ForInstruction(instruction);
         }
     }
+
+    /// <summary>
+    /// Per-module working state for reference searches. Everything derived from a member or
+    /// type reference (candidate names, the expanded and de-duplicated set of types it
+    /// mentions, rendered type names) is computed once per reference and reused for every
+    /// instruction that carries it, so the per-instruction path is dictionary lookups on
+    /// metadata tokens and string comparisons. Signature-created references (RID 0) are keyed
+    /// by identity instead, because Cecil gives all of them the same table token.
+    /// </summary>
+    private sealed class ReferenceScratch
+    {
+        private readonly string _file;
+        private readonly string _directory;
+        private readonly SearchOptions _options;
+        private readonly ResolutionDiagnostics _diagnostics;
+        private readonly MemberResolutionCache _shared;
+
+        private readonly Dictionary<uint, MethodCandidates> _methodsByToken = [];
+        private readonly Dictionary<MethodReference, MethodCandidates> _methodsByReference = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<uint, FieldEntry> _fieldsByToken = [];
+        private readonly Dictionary<FieldReference, FieldEntry> _fieldsByReference = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<uint, TypeTarget[]> _methodTypesByToken = [];
+        private readonly Dictionary<MethodReference, TypeTarget[]> _methodTypesByReference = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<uint, TypeTarget[]> _fieldTypesByToken = [];
+        private readonly Dictionary<FieldReference, TypeTarget[]> _fieldTypesByReference = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<uint, TypeTarget[]> _typeTargetsByToken = [];
+        private readonly Dictionary<TypeReference, TypeTarget[]> _typeTargetsByReference = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<uint, TypeNames> _typeNamesByToken = [];
+        private readonly Dictionary<TypeReference, TypeNames> _typeNamesByReference = new(ReferenceEqualityComparer.Instance);
+
+        private readonly Stack<TypeReference> _expansionStack = new(16);
+        private readonly List<(TypeReference Type, TypeNames Names)> _expanded = new(16);
+        private readonly Dictionary<string, string> _firstIdentity = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _collisions = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _seenTypes = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _seenNamespaces = new(StringComparer.Ordinal);
+
+        public ReferenceScratch(
+            string file,
+            SearchOptions options,
+            ResolutionDiagnostics diagnostics,
+            MemberResolutionCache shared)
+        {
+            _file = file;
+            _directory = Path.GetDirectoryName(file) ?? string.Empty;
+            _options = options;
+            _diagnostics = diagnostics;
+            _shared = shared;
+        }
+
+        /// <summary>Roots for an ad-hoc expansion (call sites, locals); fill, then call <see cref="ExpandRoots"/>.</summary>
+        public List<TypeReference> Roots { get; } = new(8);
+
+        public MethodCandidates CandidatesFor(MethodReference method) =>
+            Cached(
+                method,
+                _methodsByToken,
+                _methodsByReference,
+                static (reference, scratch) => scratch.Resolve(reference),
+                this);
+
+        private MethodCandidates Resolve(MethodReference method)
+        {
+            MemberResolution? resolution = null;
+            string? key = null;
+            if (method.DeclaringType.GetElementType().Scope is AssemblyNameReference scope)
+            {
+                key = $"{_directory}\0{scope.FullName}\0{CecilFormatting.Method(method)}";
+                _shared.TryGet(key, out resolution);
+            }
+
+            if (resolution is null)
+            {
+                resolution = ResolveMemberCandidates(method, _options);
+                if (key is not null)
+                {
+                    _shared.Share(key, resolution);
+                }
+            }
+
+            if (resolution.Unresolved)
+            {
+                _diagnostics.Add(_file, method, resolution.Reason);
+            }
+
+            return new MethodCandidates(resolution.Candidates, method.FullName);
+        }
+
+        public FieldEntry EntryFor(FieldReference field) =>
+            Cached(
+                field,
+                _fieldsByToken,
+                _fieldsByReference,
+                static (reference, _) => new FieldEntry(
+                    CecilFormatting.Field(reference),
+                    CecilFormatting.MemberName(reference.DeclaringType, reference.Name),
+                    reference.FullName),
+                this);
+
+        /// <summary>The declaring type, return type, parameter types and generic arguments of a method reference.</summary>
+        public TypeTarget[] TypesOf(MethodReference method) =>
+            Cached(
+                method,
+                _methodTypesByToken,
+                _methodTypesByReference,
+                static (reference, scratch) =>
+                {
+                    scratch.Roots.Clear();
+                    scratch.Roots.Add(reference.DeclaringType);
+                    scratch.Roots.Add(reference.ReturnType);
+                    foreach (var parameter in reference.Parameters)
+                    {
+                        scratch.Roots.Add(parameter.ParameterType);
+                    }
+
+                    if (reference is GenericInstanceMethod genericMethod)
+                    {
+                        scratch.Roots.AddRange(genericMethod.GenericArguments);
+                    }
+
+                    return scratch.ExpandRoots();
+                },
+                this);
+
+        /// <summary>The declaring type and field type of a field reference.</summary>
+        public TypeTarget[] TypesOf(FieldReference field) =>
+            Cached(
+                field,
+                _fieldTypesByToken,
+                _fieldTypesByReference,
+                static (reference, scratch) =>
+                {
+                    scratch.Roots.Clear();
+                    scratch.Roots.Add(reference.DeclaringType);
+                    scratch.Roots.Add(reference.FieldType);
+                    return scratch.ExpandRoots();
+                },
+                this);
+
+        public TypeTarget[] TypesOf(TypeReference type) =>
+            Cached(
+                type,
+                _typeTargetsByToken,
+                _typeTargetsByReference,
+                static (reference, scratch) =>
+                {
+                    scratch.Roots.Clear();
+                    scratch.Roots.Add(reference);
+                    return scratch.ExpandRoots();
+                },
+                this);
+
+        /// <summary>
+        /// Expands <see cref="Roots"/> into every reachable type, keeps the first occurrence of
+        /// each identity and of each namespace, and marks a type whose unscoped name collides
+        /// with another scope in the same set so it is shown with its @Assembly identity.
+        /// </summary>
+        public TypeTarget[] ExpandRoots()
+        {
+            _expanded.Clear();
+            _firstIdentity.Clear();
+            _collisions.Clear();
+            foreach (var type in ExpandTypeReferences(Roots, _expansionStack))
+            {
+                if (type is GenericParameter)
+                {
+                    continue;
+                }
+
+                var names = NamesFor(type);
+                if (!_firstIdentity.TryAdd(names.Unscoped, names.Identity) &&
+                    !string.Equals(_firstIdentity[names.Unscoped], names.Identity, StringComparison.Ordinal))
+                {
+                    _collisions.Add(names.Unscoped);
+                }
+
+                _expanded.Add((type, names));
+            }
+
+            _seenTypes.Clear();
+            _seenNamespaces.Clear();
+            var targets = new List<TypeTarget>(_expanded.Count);
+            foreach (var (type, names) in _expanded)
+            {
+                var symbol = _collisions.Contains(names.Unscoped) ? names.Identity : names.Unscoped;
+                var firstOfType = _seenTypes.Add(names.Identity);
+                var @namespace = type.Namespace;
+                var firstOfNamespace = !string.IsNullOrEmpty(@namespace) && _seenNamespaces.Add(@namespace);
+                if (firstOfType || firstOfNamespace)
+                {
+                    targets.Add(new TypeTarget(type.Name, names, symbol, firstOfType, firstOfNamespace ? @namespace : null));
+                }
+            }
+
+            return targets.ToArray();
+        }
+
+        private TypeNames NamesFor(TypeReference type) =>
+            Cached(type, _typeNamesByToken, _typeNamesByReference, static (reference, _) => ComputeNames(reference), this);
+
+        private static TypeNames ComputeNames(TypeReference type)
+        {
+            var unscoped = CecilFormatting.Type(type);
+            return new TypeNames(
+                unscoped,
+                CecilFormatting.TypeIdentity(type),
+                type.FullName,
+                CecilFormatting.WithoutArity(type.Name),
+                CecilFormatting.WithoutArity(unscoped));
+        }
+
+        /// <summary>Looks a reference up by its row token, or by identity for a signature-created one (RID 0).</summary>
+        private static TValue Cached<TReference, TValue>(
+            TReference reference,
+            Dictionary<uint, TValue> byToken,
+            Dictionary<TReference, TValue> byReference,
+            Func<TReference, ReferenceScratch, TValue> compute,
+            ReferenceScratch scratch)
+            where TReference : MemberReference
+        {
+            var token = reference.MetadataToken;
+            if (token.RID != 0)
+            {
+                if (!byToken.TryGetValue(token.ToUInt32(), out var value))
+                {
+                    value = compute(reference, scratch);
+                    byToken.Add(token.ToUInt32(), value);
+                }
+
+                return value;
+            }
+
+            if (!byReference.TryGetValue(reference, out var untokened))
+            {
+                untokened = compute(reference, scratch);
+                byReference.Add(reference, untokened);
+            }
+
+            return untokened;
+        }
+    }
+
+    /// <param name="Namespace">The namespace when this target is the first of its namespace in the set, otherwise null.</param>
+    private sealed record TypeTarget(string Name, TypeNames Names, string Symbol, bool FirstOfType, string? Namespace);
+
+    private sealed record MethodCandidates(IReadOnlyList<MemberCandidate> Candidates, string FullName);
+
+    private sealed record FieldEntry(string Symbol, string QualifiedName, string FullName);
+
+    private sealed record TypeNames(
+        string Unscoped,
+        string Identity,
+        string FullName,
+        string? NameWithoutArity,
+        string? UnscopedWithoutArity);
 
     private sealed record MemberCandidate(
         HitKind Kind,
@@ -904,7 +1159,7 @@ public sealed class AssemblySearcher
     {
         private readonly Dictionary<string, DependencyFailure> _failures = new(StringComparer.Ordinal);
 
-        public void Add(string file, MethodReference method, Exception? exception)
+        public void Add(string file, MethodReference method, string? reason)
         {
             var dependency = method.DeclaringType.Scope switch
             {
@@ -916,8 +1171,7 @@ public sealed class AssemblySearcher
             var key = $"{file}\0{dependency}";
             if (!_failures.TryGetValue(key, out var failure))
             {
-                failure = new DependencyFailure(
-                    file, dependency, method.FullName, exception is null ? null : AssemblyResolutionDetail.Describe(exception));
+                failure = new DependencyFailure(file, dependency, method.FullName, reason);
                 _failures.Add(key, failure);
             }
 

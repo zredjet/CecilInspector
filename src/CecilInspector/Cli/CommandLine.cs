@@ -37,6 +37,7 @@ public static class CommandLine
           --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
           --color <value>        auto | always | never (既定: auto)
                                  コンソール出力を色分けする (text形式のみ、--output のファイルは無色)
+          --parallel <number>    同時に解析するファイル数 (既定: CPU数、上限8。1で逐次処理、結果は同一)
 
         dump options:
           --include-il           メソッド本体のIL命令も出力する
@@ -59,6 +60,7 @@ public static class CommandLine
     {
         "--kind", "--kinds", "--scope", "--match", "--symbols", "--format", "--case-sensitive",
         "--no-recursive", "--max-results", "--output", "-o", "--reference-path", "--quiet", "-q", "--color",
+        "--parallel",
     };
 
     private static readonly HashSet<string> DumpOptionNames = new(StringComparer.Ordinal)
@@ -118,6 +120,7 @@ public static class CommandLine
         var referencePaths = new List<string>();
         var quiet = false;
         var color = ColorMode.Auto;
+        var parallelism = 0;
 
         var reader = new ArgumentReader(args, 1, SearchOptionNames);
         while (reader.TryNextOption(out var option))
@@ -195,6 +198,15 @@ public static class CommandLine
                     if (!reader.TryTakeEnum(out color))
                     {
                         return ParseResult.Failure("--colorには auto, always, never を指定してください。");
+                    }
+
+                    break;
+                case "--parallel":
+                    if (!reader.TryTakeValue(out var parallelText) ||
+                        !int.TryParse(parallelText, NumberStyles.None, CultureInfo.InvariantCulture, out parallelism) ||
+                        parallelism < 1)
+                    {
+                        return ParseResult.Failure("--parallelには1以上の整数を指定してください。");
                     }
 
                     break;
@@ -286,7 +298,8 @@ public static class CommandLine
             referencePaths,
             format,
             quiet,
-            color));
+            color,
+            parallelism));
     }
 
     private static ParseResult ParseDump(string[] args)

@@ -1,4 +1,5 @@
 using Mono.Cecil;
+using System.Collections.Concurrent;
 
 namespace CecilInspector.Core;
 
@@ -133,9 +134,14 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
     private readonly IdentityAwareAssemblyResolver? _fallback;
     private readonly bool _ownsFallback;
     private readonly bool _trace;
-    private readonly Dictionary<string, AssemblyDefinition> _cache = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, string> _unresolvable = new(StringComparer.Ordinal);
+    // Concurrent so the shared framework resolver answers repeated names (type forwarders
+    // resolve System.Runtime to System.Private.CoreLib on every lookup) without taking the
+    // lock; only a miss probes the disk under it.
+    private readonly ConcurrentDictionary<string, AssemblyDefinition> _cache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, AssemblyDefinition> _borrowed = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _unresolvable = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> _rejections = new(StringComparer.Ordinal);
+    private readonly object _gate = new();
     private int _probeCount;
 
     internal IdentityAwareAssemblyResolver(
@@ -162,11 +168,28 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
     public override AssemblyDefinition Resolve(AssemblyNameReference name) =>
         Resolve(name, new ReaderParameters { AssemblyResolver = this });
 
+    /// <summary>
+    /// Serialized: the framework resolver is shared by the files scanned in parallel, and the
+    /// per-file resolver is only ever used by one thread, so the lock is uncontended there.
+    /// </summary>
     public override AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters)
     {
-        if (_cache.TryGetValue(name.FullName, out var cached))
+        if (TryAnswer(name, out var answer))
         {
-            return cached;
+            return answer;
+        }
+
+        lock (_gate)
+        {
+            return TryAnswer(name, out answer) ? answer : ResolveCore(name, parameters);
+        }
+    }
+
+    private bool TryAnswer(AssemblyNameReference name, out AssemblyDefinition answer)
+    {
+        if (_cache.TryGetValue(name.FullName, out answer!) || _borrowed.TryGetValue(name.FullName, out answer!))
+        {
+            return true;
         }
 
         if (_unresolvable.TryGetValue(name.FullName, out var knownDetail))
@@ -174,10 +197,16 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
             throw Unresolved(name, knownDetail);
         }
 
+        return false;
+    }
+
+    private AssemblyDefinition ResolveCore(AssemblyNameReference name, ReaderParameters parameters)
+    {
+
         var resolved = IsSafeFileName(name.Name) ? SearchOwnLocations(name, parameters) : null;
         if (resolved is not null)
         {
-            _cache.Add(name.FullName, resolved);
+            _cache[name.FullName] = resolved;
             Trace(name, resolved);
             return resolved;
         }
@@ -187,8 +216,12 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         {
             try
             {
-                // Resolved through (and owned by) the fallback, which caches and traces it.
-                return _fallback.Resolve(name);
+                // Resolved through (and owned by) the fallback, which caches and traces it. Kept
+                // here as a borrowed entry so the shared fallback's lock is taken once per name
+                // per file, not once per referencing member.
+                var borrowed = _fallback.Resolve(name);
+                _borrowed[name.FullName] = borrowed;
+                return borrowed;
             }
             catch (AssemblyResolutionException ex)
             {
@@ -197,7 +230,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         }
 
         var detail = DescribeFailure(name, fallbackDetail);
-        _unresolvable.Add(name.FullName, detail);
+        _unresolvable[name.FullName] = detail;
         _rejections.Remove(name.FullName);
         Trace(name, null);
         throw Unresolved(name, detail);

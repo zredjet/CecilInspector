@@ -81,7 +81,12 @@ public sealed record SearchOptions(
     IReadOnlyList<string> ReferencePaths,
     ReportFormat Format = ReportFormat.Text,
     bool Quiet = false,
-    ColorMode Color = ColorMode.Auto) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet, Color);
+    ColorMode Color = ColorMode.Auto,
+    int Parallelism = 0) : AppOptions(InputPath, Recursive, OutputPath, ReferencePaths, Quiet, Color)
+{
+    /// <summary>Files scanned concurrently; 0 means the processor count capped at 8.</summary>
+    public int Parallelism { get; init; } = Parallelism;
+}
 
 public sealed record DumpOptions(
     string InputPath,

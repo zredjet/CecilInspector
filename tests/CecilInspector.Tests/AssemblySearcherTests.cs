@@ -592,6 +592,30 @@ public sealed class AssemblySearcherTests
             Assert.Contains("::Bump(", hit.Container, StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("EstimateTarget", MatchMode.Contains)]
+    [InlineData("SearchFixture::EstimateTarget", MatchMode.Contains)]
+    [InlineData("CecilInspector.Tests.SearchFixture::EstimateTarget", MatchMode.Exact)]
+    [InlineData("EstimateTarget(System.Int32)", MatchMode.Contains)]
+    [InlineData("CecilInspector.Tests.SearchFixture::EstimateTarget(System.Int32) : System.Int32", MatchMode.Exact)]
+    [InlineData("EstimateTarget\\(System", MatchMode.Regex)]
+    public void MethodDefinitionsMatchThroughNamesAndThroughTheFormattedSymbol(string query, MatchMode mode)
+    {
+        var result = Search(query, SearchKinds.Method, SearchScope.Definitions, mode);
+
+        Assert.Single(result.Hits, hit => hit.Symbol == "CecilInspector.Tests.SearchFixture::EstimateTarget(System.Int32) : System.Int32");
+    }
+
+    [Theory]
+    [InlineData("GenericArity`1", "GenericArity`1()")]
+    [InlineData("GenericArity`2", "GenericArity`2()")]
+    public void ArityQueriesStillReachTheFormattedSymbol(string query, string expectedFragment)
+    {
+        var result = Search(query, SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains);
+
+        Assert.Single(result.Hits, hit => hit.Symbol.Contains(expectedFragment, StringComparison.Ordinal));
+    }
+
     [Fact]
     public void MaxResultsAppliesAcrossFilesWhileTotalsCountEverything()
     {
