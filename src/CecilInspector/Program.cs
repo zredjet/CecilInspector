@@ -49,8 +49,10 @@ try
     var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive);
     CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
     using var reportFile = OutputFile.OpenAtomic(options.OutputPath);
+    // A redirected stdout (pipe, file) needs no terminal switch: with --color always the
+    // sequences are simply written through, which is what a pager or a colored log wants.
     var color = AnsiConsole.ShouldColor(options.Color, Console.IsOutputRedirected, Environment.GetEnvironmentVariable) &&
-                AnsiConsole.TryEnableVirtualTerminal();
+                (Console.IsOutputRedirected || AnsiConsole.TryEnableVirtualTerminal());
     var style = color ? ReportStyle.Ansi : ReportStyle.None;
     // The report file is plain text even when the console is colored.
     var fileWriter = reportFile is null ? null : color ? new AnsiStrippingTextWriter(reportFile.Writer) : reportFile.Writer;
