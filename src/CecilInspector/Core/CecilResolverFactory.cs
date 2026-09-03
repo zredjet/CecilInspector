@@ -39,7 +39,7 @@ internal static class CecilResolverFactory
         IReadOnlyList<string> gacRoots)
     {
         var resolver = new IdentityAwareAssemblyResolver(
-            IdentityPolicy.Framework, gacRoots, fallback: null, ownsFallback: false, TraceRequested());
+            probeFrameworkLocations: true, gacRoots, fallback: null, ownsFallback: false, TraceRequested());
         AddDirectories(resolver, frameworkDirectories);
         return resolver;
     }
@@ -47,9 +47,9 @@ internal static class CecilResolverFactory
     /// <summary>
     /// The resolver for one analyzed file. Probe order: the target's own folder, then
     /// --reference-path in the given order, then every folder of the input that contains
-    /// assemblies (all requiring the exact identity), and finally
-    /// <paramref name="frameworkResolver"/>. Cecil's implicit relative "." and "bin" entries
-    /// are deliberately dropped so resolution never depends on the current directory.
+    /// assemblies, and finally <paramref name="frameworkResolver"/>. Cecil's implicit relative
+    /// "." and "bin" entries are deliberately dropped so resolution never depends on the
+    /// current directory.
     /// </summary>
     public static IdentityAwareAssemblyResolver Create(
         string targetFile,
@@ -87,7 +87,7 @@ internal static class CecilResolverFactory
         bool ownsFallback)
     {
         var resolver = new IdentityAwareAssemblyResolver(
-            IdentityPolicy.Exact, [], frameworkResolver, ownsFallback, TraceRequested());
+            probeFrameworkLocations: false, [], frameworkResolver, ownsFallback, TraceRequested());
         AddDirectories(
             resolver,
             [Path.GetDirectoryName(Path.GetFullPath(targetFile))!, .. referenceDirectories, .. discoveredDirectories]);
@@ -114,44 +114,38 @@ internal static class CecilResolverFactory
     private static bool TraceRequested() => Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
 }
 
-/// <summary>Which candidates a resolver accepts for a requested assembly identity.</summary>
-internal enum IdentityPolicy
-{
-    /// <summary>The full AssemblyIdentity must match (name, version, culture, public key token).</summary>
-    Exact,
-
-    /// <summary>Framework binding: same strong-name parts and the same or a newer version.</summary>
-    Framework,
-}
-
 /// <summary>
-/// Two-tier identity resolution. A resolver over directories the user controls (the target's
-/// folder, --reference-path, folders of the input) requires the full AssemblyIdentity, so a
-/// stray wrong-version copy is never mistaken for the dependency, and falls back to a shared
-/// resolver over framework locations, which accepts the same or a newer version of the same
-/// strong name the way the runtime itself binds framework references. Each resolver caches
-/// what it resolved and owns those assemblies; identities that fail are remembered so a
-/// missing dependency is probed once rather than once per referencing instruction.
+/// Two-tier resolution with runtime binding semantics. A resolver over directories the user
+/// controls (the target's folder, --reference-path, folders of the input) falls back to a
+/// shared resolver over framework locations. Both accept a candidate with the same name,
+/// culture and public key token whose version is the same or newer, which is how the runtime
+/// binds: app-local assemblies may be newer than the reference (binding redirects, transitive
+/// NuGet upgrades) but never older. Every rejected candidate is remembered with its reason,
+/// so the warning for an unresolved dependency says which file was found and why it was not
+/// taken. Each resolver caches what it resolved and owns those assemblies; identities that
+/// fail are remembered so a missing dependency is probed once rather than once per
+/// referencing instruction.
 /// </summary>
 internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
 {
-    private readonly IdentityPolicy _policy;
+    private readonly bool _probeFrameworkLocations;
     private readonly IReadOnlyList<string> _gacRoots;
     private readonly IdentityAwareAssemblyResolver? _fallback;
     private readonly bool _ownsFallback;
     private readonly bool _trace;
     private readonly Dictionary<string, AssemblyDefinition> _cache = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _unresolvable = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _unresolvable = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<string>> _rejections = new(StringComparer.Ordinal);
     private int _probeCount;
 
     internal IdentityAwareAssemblyResolver(
-        IdentityPolicy policy,
+        bool probeFrameworkLocations,
         IReadOnlyList<string> gacRoots,
         IdentityAwareAssemblyResolver? fallback,
         bool ownsFallback,
         bool trace)
     {
-        _policy = policy;
+        _probeFrameworkLocations = probeFrameworkLocations;
         _gacRoots = gacRoots;
         _fallback = fallback;
         _ownsFallback = ownsFallback;
@@ -175,9 +169,9 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
             return cached;
         }
 
-        if (_unresolvable.Contains(name.FullName))
+        if (_unresolvable.TryGetValue(name.FullName, out var knownDetail))
         {
-            throw new AssemblyResolutionException(name);
+            throw Unresolved(name, knownDetail);
         }
 
         var resolved = IsSafeFileName(name.Name) ? SearchOwnLocations(name, parameters) : null;
@@ -188,6 +182,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
             return resolved;
         }
 
+        string? fallbackDetail = null;
         if (_fallback is not null)
         {
             try
@@ -195,15 +190,52 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
                 // Resolved through (and owned by) the fallback, which caches and traces it.
                 return _fallback.Resolve(name);
             }
-            catch (AssemblyResolutionException)
+            catch (AssemblyResolutionException ex)
             {
-                // Fall through and remember the failure here too.
+                fallbackDetail = (ex.InnerException as AssemblyResolutionDetail)?.Message;
             }
         }
 
-        _unresolvable.Add(name.FullName);
+        var detail = DescribeFailure(name, fallbackDetail);
+        _unresolvable.Add(name.FullName, detail);
+        _rejections.Remove(name.FullName);
         Trace(name, null);
-        throw new AssemblyResolutionException(name);
+        throw Unresolved(name, detail);
+    }
+
+    /// <summary>
+    /// Cecil's exception type is sealed, so the explanation travels as the inner exception;
+    /// <see cref="AssemblyResolutionDetail.Describe"/> turns the pair back into one message.
+    /// </summary>
+    private static AssemblyResolutionException Unresolved(AssemblyNameReference name, string detail) =>
+        new(name, new AssemblyResolutionDetail(detail));
+
+    /// <summary>
+    /// What was found for the name and why it was not taken: the rejected candidates of this
+    /// resolver, then the fallback's, or the plain fact that no file of that name exists.
+    /// </summary>
+    private string DescribeFailure(AssemblyNameReference name, string? fallbackDetail)
+    {
+        var parts = new List<string>();
+        if (_rejections.TryGetValue(name.FullName, out var rejections))
+        {
+            parts.AddRange(rejections.Distinct(StringComparer.Ordinal));
+        }
+        else if (_probeFrameworkLocations)
+        {
+            parts.Add($"フレームワークの既知フォルダ ({GetSearchDirectories().Length} 箇所)、実行中ランタイム、GACにもありません");
+        }
+        else if (GetSearchDirectories() is { Length: > 0 } directories)
+        {
+            parts.Add($"{name.Name}.dll が検索フォルダにありません ({string.Join(", ", directories)})");
+        }
+
+        if (fallbackDetail is not null)
+        {
+            parts.Add(fallbackDetail);
+        }
+
+        return string.Join("; ", parts);
     }
 
     protected override void Dispose(bool disposing)
@@ -228,7 +260,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
     private AssemblyDefinition? SearchOwnLocations(AssemblyNameReference name, ReaderParameters parameters)
     {
         var resolved = SearchDirectories(name, parameters);
-        if (resolved is null && _policy == IdentityPolicy.Framework)
+        if (resolved is null && _probeFrameworkLocations)
         {
             resolved = SearchTrustedPlatformAssemblies(name, parameters) ?? SearchGac(name, parameters);
         }
@@ -324,18 +356,22 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         {
             parameters.AssemblyResolver ??= this;
             candidate = AssemblyDefinition.ReadAssembly(candidatePath, parameters);
-            if (Accepts(name, candidate.Name))
+            var mismatch = DescribeMismatch(name, candidate.Name);
+            if (mismatch is null)
             {
                 var resolved = candidate;
                 candidate = null;
                 return resolved;
             }
+
+            Reject(name, $"{candidatePath} は {mismatch}");
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
             // Like Cecil's base resolver, an invalid or unreadable candidate does not prevent
             // probing the remaining extensions and locations. Cecil reports a truncated or
             // fuzzed candidate through the same runtime exceptions as any broken image.
+            Reject(name, $"{candidatePath} は読み込めません ({ex.Message})");
         }
         finally
         {
@@ -345,11 +381,42 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         return null;
     }
 
-    private bool Accepts(AssemblyNameReference requested, AssemblyNameReference candidate) => _policy switch
+    private void Reject(AssemblyNameReference name, string reason)
     {
-        IdentityPolicy.Exact => HasSameIdentity(requested, candidate),
-        _ => IsCompatibleFrameworkIdentity(requested, candidate),
-    };
+        if (!_rejections.TryGetValue(name.FullName, out var reasons))
+        {
+            reasons = [];
+            _rejections.Add(name.FullName, reasons);
+        }
+
+        reasons.Add(reason);
+    }
+
+    /// <summary>Null when the candidate binds to the request; otherwise why it does not.</summary>
+    private static string? DescribeMismatch(AssemblyNameReference requested, AssemblyNameReference candidate)
+    {
+        if (!string.Equals(requested.Name, candidate.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"名前が異なります (候補 '{candidate.Name}')";
+        }
+
+        if (!string.Equals(NormalizeCulture(requested.Culture), NormalizeCulture(candidate.Culture), StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Culture が異なります (要求 '{DisplayCulture(requested.Culture)}', 候補 '{DisplayCulture(candidate.Culture)}')";
+        }
+
+        if (!requested.PublicKeyToken.AsSpan().SequenceEqual(candidate.PublicKeyToken))
+        {
+            return $"PublicKeyToken が異なります (要求 {DisplayToken(requested.PublicKeyToken)}, 候補 {DisplayToken(candidate.PublicKeyToken)})";
+        }
+
+        if (!IsCompatibleVersion(requested, candidate))
+        {
+            return $"Version={candidate.Version} で要求 {requested.Version} より古いです";
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// An assembly name comes from the referencing file's metadata; one that is not a plain
@@ -361,28 +428,43 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         string.Equals(Path.GetFileName(name), name, StringComparison.Ordinal) &&
         name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
 
-    private static bool HasSameIdentity(AssemblyNameReference requested, AssemblyNameReference candidate) =>
-        HasSameStrongNameParts(requested, candidate) && requested.Version == candidate.Version;
-
     /// <summary>
-    /// Framework binding semantics: same name, culture and public key token, and a version that is
-    /// the same or newer. A retargetable or zero-version request accepts any version.
+    /// Runtime binding semantics for the version: the same or newer. A retargetable or
+    /// zero-version request accepts any version.
     /// </summary>
-    private static bool IsCompatibleFrameworkIdentity(AssemblyNameReference requested, AssemblyNameReference candidate) =>
-        HasSameStrongNameParts(requested, candidate) &&
-        (requested.IsRetargetable ||
-         requested.Version is null ||
-         requested.Version == new Version(0, 0, 0, 0) ||
-         candidate.Version >= requested.Version);
+    private static bool IsCompatibleVersion(AssemblyNameReference requested, AssemblyNameReference candidate) =>
+        requested.IsRetargetable ||
+        requested.Version is null ||
+        requested.Version == new Version(0, 0, 0, 0) ||
+        candidate.Version >= requested.Version;
 
-    private static bool HasSameStrongNameParts(AssemblyNameReference requested, AssemblyNameReference candidate) =>
-        string.Equals(requested.Name, candidate.Name, StringComparison.OrdinalIgnoreCase) &&
-        string.Equals(NormalizeCulture(requested.Culture), NormalizeCulture(candidate.Culture),
-            StringComparison.OrdinalIgnoreCase) &&
-        requested.PublicKeyToken.AsSpan().SequenceEqual(candidate.PublicKeyToken);
+    private static string DisplayCulture(string? culture) =>
+        string.IsNullOrEmpty(culture) ? "neutral" : culture;
+
+    private static string DisplayToken(byte[]? token) =>
+        token is null || token.Length == 0 ? "null" : Convert.ToHexStringLower(token);
 
     private static string NormalizeCulture(string? culture) =>
         string.IsNullOrEmpty(culture) || string.Equals(culture, "neutral", StringComparison.OrdinalIgnoreCase)
             ? string.Empty
             : culture;
+}
+
+/// <summary>
+/// What the resolver found instead of the requested assembly, carried as the inner exception
+/// of Cecil's sealed <see cref="AssemblyResolutionException"/>, so the unresolved-dependency
+/// warning can say "found 1.0.0.0, needed 2.0.0.0" rather than just "failed to resolve".
+/// </summary>
+internal sealed class AssemblyResolutionDetail : Exception
+{
+    public AssemblyResolutionDetail(string detail)
+        : base(detail)
+    {
+    }
+
+    /// <summary>The user-facing reason for a failure, using the detail when the resolver recorded one.</summary>
+    public static string Describe(Exception exception) =>
+        exception is AssemblyResolutionException { InnerException: AssemblyResolutionDetail detail } resolution
+            ? $"アセンブリ '{resolution.AssemblyReference.FullName}' を解決できません。{detail.Message}"
+            : exception.Message;
 }

@@ -916,7 +916,8 @@ public sealed class AssemblySearcher
             var key = $"{file}\0{dependency}";
             if (!_failures.TryGetValue(key, out var failure))
             {
-                failure = new DependencyFailure(file, dependency, method.FullName, exception?.Message);
+                failure = new DependencyFailure(
+                    file, dependency, method.FullName, exception is null ? null : AssemblyResolutionDetail.Describe(exception));
                 _failures.Add(key, failure);
             }
 

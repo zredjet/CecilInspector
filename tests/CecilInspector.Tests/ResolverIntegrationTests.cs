@@ -142,6 +142,27 @@ public sealed class ResolverIntegrationTests
     }
 
     [Fact]
+    public void NewerAdjacentCopyBindsLikeARedirectAndOlderOneIsExplained()
+    {
+        using var temp = new TempDirectory();
+        var app = temp.CreateSubdirectory("app");
+        var caller = Path.Combine(app, "Caller.dll");
+        CreateCallerAssembly(caller, "FetchValue", new Version(2, 0, 0, 0));
+
+        CreateModelAssembly(Path.Combine(app, "Model.dll"), "FetchValue", "Logical", new Version(3, 0, 0, 0));
+        var newer = Search(caller, "Logical", SearchKinds.Property);
+        Assert.Single(newer.Hits);
+        Assert.Empty(newer.Errors);
+
+        File.Delete(Path.Combine(app, "Model.dll"));
+        CreateModelAssembly(Path.Combine(app, "Model.dll"), "FetchValue", "Logical", new Version(1, 0, 0, 0));
+        var older = Search(caller, "Logical", SearchKinds.Property);
+        Assert.Empty(older.Hits);
+        var error = Assert.Single(older.Errors);
+        Assert.Contains("Model.dll は Version=1.0.0.0 で要求 2.0.0.0 より古いです", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void UnresolvableGetAccessorYieldsMethodAndPropertyCandidates()
     {
         using var temp = new TempDirectory();

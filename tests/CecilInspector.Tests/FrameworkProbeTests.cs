@@ -143,28 +143,46 @@ public sealed class FrameworkProbeTests
             File.Exists(Path.Combine(directory, "System.Runtime.dll")));
     }
 
-    [Fact]
-    public void FrameworkDirectoriesAcceptNewerVersionsButInputDirectoriesDoNot()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void SameOrNewerVersionsBindLikeTheRuntimeButOlderOnesDoNot(bool asFrameworkLocation)
     {
         using var temp = new TempDirectory();
-        var framework = temp.CreateSubdirectory("framework");
-        WriteAssembly(Path.Combine(framework, "Model.dll"), new Version(5, 0, 0, 0));
+        var folder = temp.CreateSubdirectory("folder");
+        WriteAssembly(Path.Combine(folder, "Model.dll"), new Version(5, 0, 0, 0));
         var older = new AssemblyNameReference("Model", new Version(4, 0, 0, 0));
+        var same = new AssemblyNameReference("Model", new Version(5, 0, 0, 0));
         var newer = new AssemblyNameReference("Model", new Version(6, 0, 0, 0));
+        using var resolver = asFrameworkLocation
+            ? CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [folder], [])
+            : CecilResolverFactory.Create(temp.File("Target.dll"), [folder], [temp.Path], [], []);
 
-        using (var asFramework = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [framework], []))
-        {
-            var resolved = asFramework.Resolve(older);
-            Assert.Equal(new Version(5, 0, 0, 0), resolved.Name.Version);
-            Assert.Throws<AssemblyResolutionException>(() => asFramework.Resolve(newer));
-        }
+        Assert.Equal(new Version(5, 0, 0, 0), resolver.Resolve(older).Name.Version);
+        Assert.Equal(new Version(5, 0, 0, 0), resolver.Resolve(same).Name.Version);
+        var failure = Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(newer));
+        Assert.Contains("Version=5.0.0.0 で要求 6.0.0.0 より古い", AssemblyResolutionDetail.Describe(failure), StringComparison.Ordinal);
+        Assert.Contains(Path.Combine(folder, "Model.dll"), AssemblyResolutionDetail.Describe(failure), StringComparison.Ordinal);
+    }
 
-        using (var asInput = CecilResolverFactory.Create(temp.File("Target.dll"), [framework], [temp.Path], [], []))
+    [Fact]
+    public void FailureExplainsAMissingFileOrAMismatchedToken()
+    {
+        using var temp = new TempDirectory();
+        WriteAssembly(temp.File("Model.dll"), new Version(1, 0, 0, 0));
+        using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [], []);
+
+        var missing = Assert.Throws<AssemblyResolutionException>(() =>
+            resolver.Resolve(new AssemblyNameReference("Nowhere", new Version(1, 0, 0, 0))));
+        Assert.Contains("Nowhere.dll が検索フォルダにありません", AssemblyResolutionDetail.Describe(missing), StringComparison.Ordinal);
+        Assert.Contains(temp.Path, AssemblyResolutionDetail.Describe(missing), StringComparison.Ordinal);
+
+        var signed = new AssemblyNameReference("Model", new Version(1, 0, 0, 0))
         {
-            Assert.Throws<AssemblyResolutionException>(() => asInput.Resolve(older));
-            var exact = asInput.Resolve(new AssemblyNameReference("Model", new Version(5, 0, 0, 0)));
-            Assert.Equal(new Version(5, 0, 0, 0), exact.Name.Version);
-        }
+            PublicKeyToken = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a],
+        };
+        var token = Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(signed));
+        Assert.Contains("PublicKeyToken が異なります (要求 b03f5f7f11d50a3a, 候補 null)", AssemblyResolutionDetail.Describe(token), StringComparison.Ordinal);
     }
 
     [Fact]
