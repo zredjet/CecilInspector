@@ -9,6 +9,12 @@ public sealed class AssemblySearcher
 {
     private static readonly ConditionalWeakTable<TypeDefinition, AccessorMap> AccessorMaps = new();
 
+    /// <summary>
+    /// Called with each file just before it is scanned, after the cancellation check. A test
+    /// seam: it lets a test cancel from inside a running scan and count what still started.
+    /// </summary>
+    internal Action<string>? FileStarting { get; init; }
+
     public SearchResult Search(SearchOptions options) =>
         Search(options, AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive));
 
@@ -44,6 +50,7 @@ public sealed class AssemblySearcher
         FileOutcome Scan(int index)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            FileStarting?.Invoke(files[index]);
             var outcome = ScanFile(
                 files[index],
                 RemainingCapacity(options.MaxResults, retained, index),

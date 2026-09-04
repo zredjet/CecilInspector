@@ -17,8 +17,8 @@ public sealed class CliProcessTests
     {
         using var temp = new TempDirectory();
         var directory = temp.Path;
-        File.Copy(typeof(CliProcessTests).Assembly.Location, Path.Combine(directory, "good.dll"));
-        File.WriteAllText(Path.Combine(directory, "bad.dll"), "not an assembly");
+        temp.CopyAssembly("good.dll");
+        temp.WriteBrokenAssembly("bad.dll");
         var result = await RunAsync("search", directory, "NoUniqueMatchExpected", "--kind", "method", "--symbols", "off");
 
         Assert.Equal(3, result.ExitCode);
@@ -33,7 +33,7 @@ public sealed class CliProcessTests
     {
         using var temp = new TempDirectory();
         File.Copy(TestAssembly, temp.File("good.dll"));
-        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        temp.WriteBrokenAssembly("bad.dll");
         string[] positional = command == "search" ? ["search", temp.Path, "Estimate"] : ["dump", temp.Path];
 
         var result = await RunAsync([.. positional, "--symbols", "off", "--quiet"]);
@@ -341,7 +341,7 @@ public sealed class CliProcessTests
     public async Task AllTargetsFailingUsesExitCodeTwo()
     {
         using var temp = new TempDirectory();
-        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        temp.WriteBrokenAssembly("bad.dll");
 
         var result = await RunAsync("search", temp.Path, "Anything", "--symbols", "off");
 
@@ -355,7 +355,7 @@ public sealed class CliProcessTests
     public async Task DebugEnvironmentPrintsTheExceptionBehindAWarning()
     {
         using var temp = new TempDirectory();
-        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        temp.WriteBrokenAssembly("bad.dll");
         var environment = new Dictionary<string, string> { ["CECIL_INSPECTOR_DEBUG"] = "1" };
 
         var plain = await RunAsync("dump", temp.Path, "--symbols", "off");
@@ -411,6 +411,47 @@ public sealed class CliProcessTests
     }
 
     [Fact]
+    public async Task DumpColorAlwaysColorsTheConsoleButNeverTheReportFile()
+    {
+        using var temp = new TempDirectory();
+        var output = temp.File("dump.txt");
+        var esc = ((char)27).ToString();
+
+        var result = await RunAsync("dump", TestAssembly, "--symbols", "off", "--color", "always", "--output", output);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains(esc + "[1mAssembly: ", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(esc + "[36mFile: ", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(esc + "[1;36mType: ", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(esc + "[33mMethod: ", result.StandardOutput, StringComparison.Ordinal);
+        var file = File.ReadAllText(output);
+        Assert.DoesNotContain((char)27, file);
+        Assert.Contains("Type: CecilInspector.Tests.SearchFixture", file, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ParallelScanThroughTheCliMatchesTheSequentialReport()
+    {
+        using var temp = new TempDirectory();
+        for (var index = 0; index < 3; index++)
+        {
+            temp.CopyAssembly($"Copy{index}.dll");
+        }
+
+        temp.WriteBrokenAssembly("bad.dll");
+        string[] arguments = ["search", temp.Path, "Estimate", "--scope", "all", "--symbols", "off", "--max-results", "50"];
+
+        var sequential = await RunAsync([.. arguments, "--parallel", "1"]);
+        var parallel = await RunAsync([.. arguments, "--parallel", "3"]);
+
+        Assert.Equal(3, sequential.ExitCode);
+        Assert.Equal(3, parallel.ExitCode);
+        Assert.Contains("Matches: ", sequential.StandardOutput, StringComparison.Ordinal);
+        Assert.Equal(sequential.StandardOutput, parallel.StandardOutput);
+        Assert.Equal(sequential.StandardError, parallel.StandardError);
+    }
+
+    [Fact]
     public async Task MultiFileRegexTimeoutWithParallelismExitsOneAndLeavesNoPartial()
     {
         // Several files time out at once, so the parallel scan fails with more than one inner
@@ -439,7 +480,7 @@ public sealed class CliProcessTests
     public async Task DebugEnvironmentOverridesQuiet()
     {
         using var temp = new TempDirectory();
-        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        temp.WriteBrokenAssembly("bad.dll");
         var environment = new Dictionary<string, string> { ["CECIL_INSPECTOR_DEBUG"] = "1" };
 
         var result = await RunAsync(new RunOptions(Environment: environment), "dump", temp.Path, "--symbols", "off", "-q");

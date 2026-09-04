@@ -39,6 +39,8 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "ARTIFACT=cecil-inspector-$VERSION-win-x64" >> "$GITHUB_ENV"
       - run: dotnet restore CecilInspector.slnx
+      # The same gate as CI: naming and using-directive rules are only enforced by format.
+      - run: dotnet format CecilInspector.slnx --verify-no-changes --no-restore
       - run: dotnet build CecilInspector.slnx -c Release --no-restore
       - run: dotnet test CecilInspector.slnx -c Release --no-build --logger "trx" --results-directory TestResults
       - name: Publish self-contained single-file win-x64

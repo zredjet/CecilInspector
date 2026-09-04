@@ -12,7 +12,7 @@ public sealed class MetadataDumperTests
     public void StreamsMetadataToProvidedWriter()
     {
         var assembly = typeof(MetadataDumperTests).Assembly.Location;
-        var options = new DumpOptions(assembly, true, false, SymbolMode.Required, null, []);
+        var options = new DumpOptions(assembly, Recursive: true, IncludeIl: false, SymbolMode.Required, null, []);
         using var writer = new StringWriter();
 
         var result = new MetadataDumper().Dump(
@@ -32,7 +32,7 @@ public sealed class MetadataDumperTests
     public void WriterFailureIsNotReportedAsAssemblyFailure()
     {
         var assembly = typeof(MetadataDumperTests).Assembly.Location;
-        var options = new DumpOptions(assembly, true, false, SymbolMode.Off, null, []);
+        var options = new DumpOptions(assembly, Recursive: true, IncludeIl: false, SymbolMode.Off, null, []);
 
         Assert.Throws<ReportWriteException>(() =>
             new MetadataDumper().Dump(
@@ -62,7 +62,7 @@ public sealed class MetadataDumperTests
             assembly.Write(path);
         }
 
-        var options = new DumpOptions(path, true, false, SymbolMode.Off, null, []);
+        var options = new DumpOptions(path, Recursive: true, IncludeIl: false, SymbolMode.Off, null, []);
         using var writer = new StringWriter();
         new MetadataDumper().Dump(options, [path], 1, [directory], [], writer);
 
@@ -79,7 +79,7 @@ public sealed class MetadataDumperTests
     public void DumpUsesCanonicalGenericFormatting()
     {
         var assembly = typeof(MetadataDumperTests).Assembly.Location;
-        var options = new DumpOptions(assembly, true, false, SymbolMode.Off, null, []);
+        var options = new DumpOptions(assembly, Recursive: true, IncludeIl: false, SymbolMode.Off, null, []);
         using var writer = new StringWriter();
 
         new MetadataDumper().Dump(options, [assembly], 1, [Path.GetDirectoryName(assembly)!], [], writer);
@@ -100,7 +100,7 @@ public sealed class MetadataDumperTests
     public void IncludeIlEmitsInstructionsWithSourceLocations()
     {
         var assembly = typeof(MetadataDumperTests).Assembly.Location;
-        var options = new DumpOptions(assembly, true, true, SymbolMode.Required, null, []);
+        var options = new DumpOptions(assembly, Recursive: true, IncludeIl: true, SymbolMode.Required, null, []);
         using var writer = new StringWriter();
 
         var result = new MetadataDumper().Dump(options, [assembly], 1, [Path.GetDirectoryName(assembly)!], [], writer);
@@ -134,5 +134,22 @@ public sealed class MetadataDumperTests
 
         Assert.Null(location);
         Assert.Equal(0, resolver.ProbeCount);
+    }
+
+    [Fact]
+    public void AnsiStyleColorsAssemblyFileTypeAndMethodLines()
+    {
+        var assembly = typeof(MetadataDumperTests).Assembly.Location;
+        var options = new DumpOptions(assembly, false, false, SymbolMode.Off, null, []);
+        var esc = ((char)27).ToString();
+        using var writer = new StringWriter();
+
+        new MetadataDumper(ReportStyle.Ansi).Dump(options, [assembly], 1, [Path.GetDirectoryName(assembly)!], [], writer);
+
+        var text = writer.ToString();
+        Assert.Contains(esc + "[1mAssembly: CecilInspector.Tests", text, StringComparison.Ordinal);
+        Assert.Contains(esc + "[36mFile: ", text, StringComparison.Ordinal);
+        Assert.Contains(esc + "[1;36mType: CecilInspector.Tests.SearchFixture" + esc + "[0m", text, StringComparison.Ordinal);
+        Assert.Contains(esc + "[33mMethod: ", text, StringComparison.Ordinal);
     }
 }

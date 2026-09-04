@@ -55,5 +55,6 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}
           path: TestResults
-          if-no-files-found: error
+          # A failed format or build step leaves no results; do not add a second red step.
+          if-no-files-found: warn
           retention-days: 14

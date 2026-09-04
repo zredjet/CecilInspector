@@ -18,7 +18,7 @@ public sealed class MultiModuleTests
     {
         using var temp = new TempDirectory();
         var fixture = MultiModuleFixture.Build(temp.Path);
-        File.WriteAllText(temp.File("Unrelated.dll"), "not an assembly");
+        temp.WriteBrokenAssembly("Unrelated.dll");
 
         var result = new AssemblySearcher().Search(Options(fixture.Manifest, "NetModuleType", SearchKinds.Type));
 
@@ -75,7 +75,7 @@ public sealed class MultiModuleTests
         using var writer = new StringWriter();
 
         var result = new MetadataDumper().Dump(
-            new DumpOptions(fixture.Manifest, true, false, SymbolMode.Off, null, []),
+            new DumpOptions(fixture.Manifest, Recursive: true, IncludeIl: false, SymbolMode.Off, null, []),
             discovery,
             writer,
             TestContext.Current.CancellationToken);
@@ -104,7 +104,7 @@ public sealed class MultiModuleTests
     }
 
     private static SearchOptions Options(string input, string query, SearchKinds kinds) =>
-        new(input, query, kinds, SearchScope.Definitions, MatchMode.Exact, true, true, SymbolMode.Off, 100, null, []);
+        new(input, query, kinds, SearchScope.Definitions, MatchMode.Exact, IgnoreCase: true, Recursive: true, SymbolMode.Off, 100, null, []);
 }
 
 internal static class MultiModuleFixture
@@ -174,8 +174,17 @@ internal static class MultiModuleFixture
 
         startInfo.Environment["DOTNET_NOLOGO"] = "1";
         using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("csc を起動できませんでした。");
-        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-        process.WaitForExit();
+        // Both pipes are drained concurrently: reading stdout to its end before touching
+        // stderr deadlocks once csc fills the stderr buffer with errors.
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(TimeSpan.FromMinutes(2)))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("csc が2分以内に終了しませんでした。");
+        }
+
+        var output = standardOutput.GetAwaiter().GetResult() + standardError.GetAwaiter().GetResult();
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException($"csc が失敗しました ({process.ExitCode}): {output}");

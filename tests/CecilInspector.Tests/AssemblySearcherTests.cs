@@ -551,7 +551,7 @@ public sealed class AssemblySearcherTests
     public void NonRecursiveSearchIgnoresSubdirectories()
     {
         using var temp = new TempDirectory();
-        File.Copy(ThisAssembly, temp.File("root.dll"));
+        temp.CopyAssembly("root.dll");
         File.Copy(ThisAssembly, Path.Combine(temp.CreateSubdirectory("nested"), "nested.dll"));
         var options = Options("EstimateTarget", SearchKinds.Method, SearchScope.Definitions, MatchMode.Exact) with
         {
@@ -622,8 +622,8 @@ public sealed class AssemblySearcherTests
     public void MaxResultsAppliesAcrossFilesWhileTotalsCountEverything()
     {
         using var temp = new TempDirectory();
-        File.Copy(ThisAssembly, temp.File("First.dll"));
-        File.Copy(ThisAssembly, temp.File("Second.dll"));
+        temp.CopyAssembly("First.dll");
+        temp.CopyAssembly("Second.dll");
         var single = Search("Estimate", SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains);
         var options = Options("Estimate", SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains) with
         {
@@ -676,7 +676,7 @@ public sealed class AssemblySearcherTests
         new AssemblySearcher().Search(Options(query, kinds, scope, match));
 
     private static SearchOptions Options(string query, SearchKinds kinds, SearchScope scope, MatchMode match) =>
-        new(ThisAssembly, query, kinds, scope, match, true, true, SymbolMode.Required, 1000, null, []);
+        new(ThisAssembly, query, kinds, scope, match, IgnoreCase: true, Recursive: true, SymbolMode.Required, 1000, null, []);
 }
 
 public sealed class SearchFixture

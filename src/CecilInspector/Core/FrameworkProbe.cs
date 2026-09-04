@@ -116,9 +116,17 @@ internal static class FrameworkProbe
 
         void Add(string? directory)
         {
-            if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory) && seen.Add(directory))
+            if (string.IsNullOrEmpty(directory))
             {
-                directories.Add(Path.TrimEndingDirectorySeparator(directory));
+                return;
+            }
+
+            // Compare what is stored: the running runtime's directory carries a trailing
+            // separator and the same directory found under an install root does not.
+            var normalized = Path.TrimEndingDirectorySeparator(directory);
+            if (Directory.Exists(normalized) && seen.Add(normalized))
+            {
+                directories.Add(normalized);
             }
         }
 
@@ -196,9 +204,15 @@ internal static class FrameworkProbe
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var candidate in candidates)
         {
-            if (!string.IsNullOrEmpty(candidate) && Directory.Exists(candidate) && seen.Add(Path.GetFullPath(candidate)))
+            if (string.IsNullOrEmpty(candidate) || !Directory.Exists(candidate))
             {
-                yield return candidate;
+                continue;
+            }
+
+            var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
+            if (seen.Add(normalized))
+            {
+                yield return normalized;
             }
         }
     }

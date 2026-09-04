@@ -121,15 +121,69 @@ public sealed class FrameworkProbeTests
         Assert.NotEmpty(second.MainModule.Types);
     }
 
-    [Fact]
-    public void AssemblyNamesThatAreNotFileNamesAreNotProbed()
+    [Theory]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("../Model")]
+    [InlineData("sub/Model")]
+    [InlineData("Mo*del")]
+    [InlineData("/Model")]
+    public void AssemblyNamesThatAreNotFileNamesAreNotProbed(string name)
     {
         using var temp = new TempDirectory();
         using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [], []);
+        // '*' stands in for a character every platform rejects in a file name (NUL).
+        var unsafeName = name.Replace('/', Path.DirectorySeparatorChar).Replace('*', char.MinValue);
+        var reference = new AssemblyNameReference(unsafeName, new Version(1, 0, 0, 0));
 
-        Assert.Throws<AssemblyResolutionException>(() =>
-            resolver.Resolve(new AssemblyNameReference(Path.Combine("..", "Model"), new Version(1, 0, 0, 0))));
+        Assert.Throws<AssemblyResolutionException>(() => resolver.Resolve(reference));
         Assert.Equal(0, resolver.ProbeCount);
+    }
+
+    [Fact]
+    public void FailureExplainsANameOrCultureMismatch()
+    {
+        using var temp = new TempDirectory();
+        // Other.dll holds an assembly called Model; Localized.dll holds a ja-JP satellite.
+        WriteAssembly(temp.File("Other.dll"), new Version(1, 0, 0, 0));
+        WriteAssembly(temp.File("Localized.dll"), new Version(1, 0, 0, 0), assemblyName: "Localized", culture: "ja-JP");
+        using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [], []);
+
+        var name = Assert.Throws<AssemblyResolutionException>(() =>
+            resolver.Resolve(new AssemblyNameReference("Other", new Version(1, 0, 0, 0))));
+        var culture = Assert.Throws<AssemblyResolutionException>(() =>
+            resolver.Resolve(new AssemblyNameReference("Localized", new Version(1, 0, 0, 0))));
+
+        Assert.Contains("名前が異なります (候補 'Model')", AssemblyResolutionDetail.Describe(name), StringComparison.Ordinal);
+        Assert.Contains("Culture が異なります (要求 'neutral', 候補 'ja-JP')", AssemblyResolutionDetail.Describe(culture), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RetargetableAndZeroVersionRequestsAcceptAnyVersion()
+    {
+        using var temp = new TempDirectory();
+        WriteAssembly(temp.File("Model.dll"), new Version(5, 0, 0, 0));
+        using var resolver = CecilResolverFactory.Create(temp.File("Target.dll"), [], [temp.Path], [], []);
+        var zero = new AssemblyNameReference("Model", new Version(0, 0, 0, 0));
+        var retargetable = new AssemblyNameReference("Model", new Version(9, 0, 0, 0)) { IsRetargetable = true };
+
+        Assert.Equal(new Version(5, 0, 0, 0), resolver.Resolve(zero).Name.Version);
+        Assert.Equal(new Version(5, 0, 0, 0), resolver.Resolve(retargetable).Name.Version);
+    }
+
+    [Fact]
+    public void RunningRuntimeDirectoryWithTrailingSeparatorIsListedOnce()
+    {
+        using var temp = new TempDirectory();
+        var root = temp.CreateSubdirectory("dotnet");
+        var shared = Path.Combine(root, "shared", "Microsoft.NETCore.App", "10.0.0");
+        Directory.CreateDirectory(shared);
+        var runtimeWithSeparator = shared + Path.DirectorySeparatorChar;
+
+        var directories = FrameworkProbe.ComputeDirectories(Env(("DOTNET_ROOT", root)), OSPlatform.Linux, runtimeWithSeparator);
+
+        Assert.Single(directories, shared);
+        Assert.DoesNotContain(runtimeWithSeparator, directories);
     }
 
     [Fact]
@@ -275,11 +329,16 @@ public sealed class FrameworkProbeTests
     private static Func<string, string?> Env(params (string Name, string Value)[] variables) =>
         name => variables.FirstOrDefault(variable => variable.Name == name).Value;
 
-    private static void WriteAssembly(string path, Version version)
+    private static void WriteAssembly(string path, Version version, string assemblyName = "Model", string? culture = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        using var assembly = AssemblyDefinition.CreateAssembly(
-            new AssemblyNameDefinition("Model", version), "Model", ModuleKind.Dll);
+        var name = new AssemblyNameDefinition(assemblyName, version);
+        if (culture is not null)
+        {
+            name.Culture = culture;
+        }
+
+        using var assembly = AssemblyDefinition.CreateAssembly(name, assemblyName, ModuleKind.Dll);
         assembly.Write(path);
     }
 }

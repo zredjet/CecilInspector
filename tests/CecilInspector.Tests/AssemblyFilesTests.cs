@@ -144,7 +144,7 @@ public sealed class AssemblyFilesTests
     public void DiscoveryObservesCancellation()
     {
         using var temp = new TempDirectory();
-        File.Copy(ThisAssembly, temp.File("root.dll"));
+        temp.CopyAssembly("root.dll");
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 

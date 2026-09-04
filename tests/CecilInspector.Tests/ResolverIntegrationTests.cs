@@ -26,8 +26,8 @@ public sealed class ResolverIntegrationTests
             SearchKinds.Property,
             SearchScope.References,
             MatchMode.Exact,
-            true,
-            true,
+            IgnoreCase: true,
+            Recursive: true,
             SymbolMode.Off,
             100,
             null,
@@ -60,8 +60,8 @@ public sealed class ResolverIntegrationTests
             SearchKinds.Property,
             SearchScope.References,
             MatchMode.Exact,
-            true,
-            true,
+            IgnoreCase: true,
+            Recursive: true,
             SymbolMode.Off,
             100,
             null,
@@ -87,8 +87,8 @@ public sealed class ResolverIntegrationTests
             SearchKinds.Property,
             SearchScope.References,
             MatchMode.Exact,
-            true,
-            true,
+            IgnoreCase: true,
+            Recursive: true,
             SymbolMode.Off,
             100,
             null,
@@ -127,8 +127,8 @@ public sealed class ResolverIntegrationTests
             SearchKinds.Property,
             SearchScope.References,
             MatchMode.Exact,
-            true,
-            true,
+            IgnoreCase: true,
+            Recursive: true,
             SymbolMode.Off,
             100,
             null,
@@ -345,7 +345,7 @@ public sealed class ResolverIntegrationTests
         SearchKinds kinds,
         MatchMode match = MatchMode.Exact) =>
         new AssemblySearcher().Search(new SearchOptions(
-            input, query, kinds, SearchScope.References, match, true, true, SymbolMode.Off, 100, null, []));
+            input, query, kinds, SearchScope.References, match, IgnoreCase: true, Recursive: true, SymbolMode.Off, 100, null, []));
 
     /// <summary>A caller of the multi-dimensional array pseudo-method int[,]::Get(int, int).</summary>
     private static void CreateArrayCallerAssembly(string path)

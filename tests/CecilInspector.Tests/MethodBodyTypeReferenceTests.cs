@@ -95,7 +95,7 @@ public sealed class MethodBodyTypeReferenceTests
         SearchKinds kinds,
         SearchScope scope = SearchScope.References) =>
         new AssemblySearcher().Search(new SearchOptions(
-            path, query, kinds, scope, MatchMode.Exact, true, true, SymbolMode.Off, 100, null, []));
+            path, query, kinds, scope, MatchMode.Exact, IgnoreCase: true, Recursive: true, SymbolMode.Off, 100, null, []));
 
     /// <returns>The IL offset of the catch handler's first instruction.</returns>
     private static int WriteFixture(string path)

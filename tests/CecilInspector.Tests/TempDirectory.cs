@@ -9,6 +9,8 @@ namespace CecilInspector.Tests;
 /// </summary>
 internal sealed class TempDirectory : IDisposable
 {
+    private static readonly string TestAssembly = typeof(TempDirectory).Assembly.Location;
+
     public TempDirectory()
     {
         Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"cecil-inspector-{Guid.NewGuid():N}");
@@ -19,6 +21,22 @@ internal sealed class TempDirectory : IDisposable
 
     /// <summary>Returns a path inside the directory without creating anything.</summary>
     public string File(string name) => System.IO.Path.Combine(Path, name);
+
+    /// <summary>Copies the test assembly itself into the directory under the given name.</summary>
+    public string CopyAssembly(string name)
+    {
+        var path = File(name);
+        System.IO.File.Copy(TestAssembly, path);
+        return path;
+    }
+
+    /// <summary>Writes a file that is not a PE image at all, for the broken-input scenarios.</summary>
+    public string WriteBrokenAssembly(string name)
+    {
+        var path = File(name);
+        System.IO.File.WriteAllText(path, "not an assembly");
+        return path;
+    }
 
     /// <summary>Creates and returns a subdirectory.</summary>
     public string CreateSubdirectory(string name)
