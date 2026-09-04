@@ -119,4 +119,20 @@ public sealed class MetadataDumperTests
     {
         public override void WriteLine(string? value) => throw new IOException("disk full");
     }
+
+    [Fact]
+    public void NoSymbolsMeansNoStateMachineResolution()
+    {
+        // Without a PDB the async fallback (custom attribute decode plus a Resolve() of the
+        // state machine type per method) has nothing to find and must not run at all.
+        var assembly = typeof(MetadataDumperTests).Assembly.Location;
+        using var resolver = CecilResolverFactory.Create(assembly, [], [Path.GetDirectoryName(assembly)!]);
+        using var module = CecilModuleReader.Read(assembly, SymbolMode.Off, resolver, out _);
+        var asyncMethod = module.GetType("CecilInspector.Tests.SearchFixture").Methods.Single(method => method.Name == "AsyncTarget");
+
+        var location = DebugLocations.First(asyncMethod);
+
+        Assert.Null(location);
+        Assert.Equal(0, resolver.ProbeCount);
+    }
 }

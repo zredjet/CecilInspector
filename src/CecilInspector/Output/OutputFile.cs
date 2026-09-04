@@ -120,7 +120,16 @@ internal sealed class AtomicReportFile : IDisposable
 
         if (!_committed && File.Exists(_partialPath))
         {
-            File.Delete(_partialPath);
+            try
+            {
+                File.Delete(_partialPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A leftover partial file (a scanner holding it open, for instance) must not
+                // replace the exception that is already propagating, such as the cancellation
+                // that maps to exit code 130.
+            }
         }
     }
 

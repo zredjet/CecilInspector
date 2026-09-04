@@ -9,7 +9,9 @@ internal static class DebugLocations
 
     public static SourceLocation? First(MethodDefinition? method)
     {
-        if (method is null)
+        // Without symbols there is nothing to find, and the state-machine fallback below would
+        // still decode every method's custom attributes and resolve the state machine type.
+        if (method is null || !method.Module.HasSymbols)
         {
             return null;
         }

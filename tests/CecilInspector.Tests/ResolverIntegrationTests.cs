@@ -305,6 +305,23 @@ public sealed class ResolverIntegrationTests
     }
 
     [Fact]
+    public void SameFileIsLoadedOnceForDifferentCompatibleVersions()
+    {
+        using var temp = new TempDirectory();
+        var root = temp.Path;
+        CreateModelAssembly(Path.Combine(root, "Model.dll"), "FetchValue", null, new Version(2, 0, 0, 0));
+        using var resolver = CecilResolverFactory.Create(Path.Combine(root, "Target.dll"), [], [root]);
+
+        var newer = resolver.Resolve(new AssemblyNameReference("Model", new Version(2, 0, 0, 0)));
+        var older = resolver.Resolve(new AssemblyNameReference("Model", new Version(1, 0, 0, 0)));
+        var error = Assert.Throws<AssemblyResolutionException>(() =>
+            resolver.Resolve(new AssemblyNameReference("Model", new Version(3, 0, 0, 0))));
+
+        Assert.Same(newer, older);
+        Assert.Contains("Version=2.0.0.0 で要求 3.0.0.0 より古い", AssemblyResolutionDetail.Describe(error), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SearchDirectoriesExcludeCecilRelativeDefaults()
     {
         using var temp = new TempDirectory();

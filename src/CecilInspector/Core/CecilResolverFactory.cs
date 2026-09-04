@@ -123,7 +123,12 @@ internal static class CecilResolverFactory
 /// so the warning for an unresolved dependency says which file was found and why it was not
 /// taken. Each resolver caches what it resolved and owns those assemblies; identities that
 /// fail are remembered so a missing dependency is probed once rather than once per
-/// referencing instruction.
+/// referencing instruction. Assemblies are also indexed by file, so two requests that bind to
+/// the same file (versions 11.0 and 13.0 of a package both satisfied by the newer copy) share
+/// one instance. Dependencies stay file-backed (unlike the target, which is copied into
+/// memory): reading them in memory doubled the peak RSS of a folder scan, because every file
+/// in flight resolves its siblings through its own resolver, and a dependency is only read
+/// for member classification, so a rewrite during the scan surfaces as a warning at worst.
 /// </summary>
 internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
 {
@@ -138,6 +143,9 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
     private readonly ConcurrentDictionary<string, AssemblyDefinition> _cache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, AssemblyDefinition> _borrowed = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _unresolvable = new(StringComparer.Ordinal);
+    // The owner of every assembly this resolver read, one entry per file; only touched under
+    // the lock. _cache is the by-name index over the same instances for the lock-free path.
+    private readonly Dictionary<string, AssemblyDefinition> _byPath = new(PathComparer);
     private readonly Dictionary<string, List<string>> _rejections = new(StringComparer.Ordinal);
     private readonly object _gate = new();
     private int _probeCount;
@@ -273,11 +281,12 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
     {
         if (disposing)
         {
-            foreach (var assembly in _cache.Values)
+            foreach (var assembly in _byPath.Values)
             {
                 assembly.Dispose();
             }
 
+            _byPath.Clear();
             _cache.Clear();
             if (_ownsFallback)
             {
@@ -382,6 +391,21 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
             return null;
         }
 
+        var fullPath = Path.GetFullPath(candidatePath);
+        if (_byPath.TryGetValue(fullPath, out var loaded))
+        {
+            // Already open for another request (an older version of the same reference);
+            // its identity decides, without reading the file again.
+            var loadedMismatch = DescribeMismatch(name, loaded.Name);
+            if (loadedMismatch is null)
+            {
+                return loaded;
+            }
+
+            Reject(name, $"{candidatePath} は {loadedMismatch}");
+            return null;
+        }
+
         AssemblyDefinition? candidate = null;
         try
         {
@@ -392,6 +416,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
             {
                 var resolved = candidate;
                 candidate = null;
+                _byPath[fullPath] = resolved;
                 return resolved;
             }
 
@@ -422,6 +447,9 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
 
         reasons.Add(reason);
     }
+
+    private static StringComparer PathComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     /// <summary>Null when the candidate binds to the request; otherwise why it does not.</summary>
     private static string? DescribeMismatch(AssemblyNameReference requested, AssemblyNameReference candidate)
