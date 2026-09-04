@@ -34,10 +34,12 @@ public static class CommandLine
           --no-recursive         フォルダのサブディレクトリを検索しない
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
-          --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
+          --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない。
+                         CECIL_INSPECTOR_DEBUG=1 のときは無視して全診断を出力する)
           --color <value>        auto | always | never (既定: auto)
                                  コンソール出力を色分けする (text形式のみ、--output のファイルは無色)
-          --parallel <number>    同時に解析するファイル数 (既定: CPU数、上限8。1で逐次処理、結果は同一)
+          --parallel <number>    同時に解析するファイル数 (既定: CPU数で最大8。明示指定に上限はない。
+                         1で逐次処理、結果は同一)
 
         dump options:
           --include-il           メソッド本体のIL命令も出力する
@@ -45,7 +47,8 @@ public static class CommandLine
           --no-recursive         フォルダのサブディレクトリを走査しない
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ逐次保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
-          --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない)
+          --quiet, -q            標準エラーへの警告・情報の各行を出さない (要約1行と終了コードは変わらない。
+                         CECIL_INSPECTOR_DEBUG=1 のときは無視して全診断を出力する)
           --color <value>        auto | always | never (既定: auto)
 
         例:
@@ -93,7 +96,7 @@ public static class CommandLine
             return ParseResult.Help();
         }
 
-        if (args.Length == 1 && IsVersionToken(args[0]))
+        if (IsVersionToken(args[0]))
         {
             return ParseResult.Version();
         }

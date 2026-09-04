@@ -46,7 +46,7 @@ try
     // Preflight: everything that can reject the invocation runs before the first side effect
     // (creating the report file) and before any long-running analysis, so a bad --output or
     // --reference-path fails immediately instead of after a full scan.
-    var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive);
+    var discovery = AssemblyFiles.DiscoverDetailed(options.InputPath, options.Recursive, cancellation.Token);
     CecilResolverFactory.ValidateReferencePaths(options.ReferencePaths);
     using var reportFile = OutputFile.OpenAtomic(options.OutputPath);
     // A redirected stdout (pipe, file) needs no terminal switch: with --color always the
@@ -66,7 +66,7 @@ try
         case SearchOptions searchOptions:
             {
                 var result = new AssemblySearcher().Search(searchOptions, discovery, cancellation.Token);
-                TextReport.WriteSearch(writer, result, searchOptions, style);
+                TextReport.WriteSearch(writer, result, searchOptions, style, cancellation.Token);
                 (errors, warnings, filesSucceeded) = (result.Errors, result.Warnings, result.FilesSucceeded);
                 break;
             }
@@ -82,7 +82,7 @@ try
 
     writer.Flush();
     reportFile?.Commit();
-    if (options.Quiet)
+    if (options.Quiet && !DebugSwitch.IsEnabled)
     {
         WriteDiagnosticSummary(errors.Count, warnings.Count);
     }
@@ -109,6 +109,15 @@ catch (Exception ex) when (ex is ArgumentException or IOException or Unauthorize
 {
     Console.Error.WriteLine($"エラー: {TextSanitizer.Escape(ex.Message)}");
     return 2;
+}
+catch (Exception ex) when (!ExceptionPolicy.IsFatal(ex))
+{
+    // A failure this tool did not anticipate. Handling it here instead of letting the runtime
+    // abort the process keeps the partial report file cleanup (the using above) and gives
+    // automation a defined exit code; the trace is what a bug report needs.
+    Console.Error.WriteLine("内部エラー: 予期しない失敗のため終了しました。以下の内容を添えて報告してください。");
+    WriteExceptionTrace(ex);
+    return 70;
 }
 
 static int ExitCode(int filesSucceeded, int errorCount) => errorCount switch
@@ -140,20 +149,27 @@ static void WriteDiagnosticSummary(int errorCount, int warningCount)
 /// </summary>
 static void WriteDiagnostics(IEnumerable<ScanError> diagnostics, string prefix)
 {
-    var debug = Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
+    var debug = DebugSwitch.IsEnabled;
     foreach (var diagnostic in diagnostics)
     {
         Console.Error.WriteLine(
             $"{prefix}: {TextSanitizer.Escape(diagnostic.FilePath)}: {TextSanitizer.Escape(diagnostic.Message)}");
         if (debug && diagnostic.Exception is not null)
         {
-            // Escape line by line: escaping the whole trace and then restoring "\n" would also turn
-            // a literal backslash-n inside a Windows path (C:\nuget\...) into a line break.
-            foreach (var line in diagnostic.Exception.ToString().Split(["\r\n", "\n"], StringSplitOptions.None))
-            {
-                Console.Error.WriteLine($"    {TextSanitizer.Escape(line)}");
-            }
+            WriteExceptionTrace(diagnostic.Exception);
         }
+    }
+}
+
+/// <summary>
+/// Escapes line by line: escaping the whole trace and then restoring "\n" would also turn a
+/// literal backslash-n inside a Windows path (C:\nuget\...) into a line break.
+/// </summary>
+static void WriteExceptionTrace(Exception exception)
+{
+    foreach (var line in exception.ToString().Split(["\r\n", "\n"], StringSplitOptions.None))
+    {
+        Console.Error.WriteLine($"    {TextSanitizer.Escape(line)}");
     }
 }
 

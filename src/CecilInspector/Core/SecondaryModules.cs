@@ -32,7 +32,7 @@ internal static class SecondaryModules
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
-            report(new ScanError(file, $"secondary netmoduleを読み込めません: {ex.Message}", ex));
+            report(new ScanError(file, $"secondary netmoduleを読み込めません: {ExceptionPolicy.UserMessage(ex)}", ex));
             return;
         }
 
@@ -46,7 +46,7 @@ internal static class SecondaryModules
             }
             catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
             {
-                report(new ScanError(moduleFile, ex.Message, ex));
+                report(new ScanError(moduleFile, ExceptionPolicy.UserMessage(ex), ex));
             }
             finally
             {

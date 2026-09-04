@@ -410,6 +410,47 @@ public sealed class CliProcessTests
         _ = await standardOutput;
     }
 
+    [Fact]
+    public async Task MultiFileRegexTimeoutWithParallelismExitsOneAndLeavesNoPartial()
+    {
+        // Several files time out at once, so the parallel scan fails with more than one inner
+        // exception; the CLI must still report the timeout as an argument error (exit 1), not
+        // die with an unhandled AggregateException that orphans the partial report file.
+        using var temp = new TempDirectory();
+        for (var index = 0; index < 6; index++)
+        {
+            GeneratedAssemblies.WriteTypeInNamespace(temp.File($"Long{index}.dll"), new string('a', 64));
+        }
+
+        var output = temp.File("report.txt");
+        var result = await RunAsync(
+            "search", temp.Path, "^(?=.)(.+)+Z$", "--kind", "namespace", "--match", "regex", "--symbols", "off",
+            "--parallel", "4", "--output", output);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.StandardOutput);
+        Assert.Contains("タイムアウト", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("AggregateException", result.StandardError, StringComparison.Ordinal);
+        Assert.False(File.Exists(output));
+        Assert.Empty(Directory.GetFiles(temp.Path, "*.partial"));
+    }
+
+    [Fact]
+    public async Task DebugEnvironmentOverridesQuiet()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(temp.File("bad.dll"), "not an assembly");
+        var environment = new Dictionary<string, string> { ["CECIL_INSPECTOR_DEBUG"] = "1" };
+
+        var result = await RunAsync(new RunOptions(Environment: environment), "dump", temp.Path, "--symbols", "off", "-q");
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("警告: ", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("bad.dll", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Exception", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("--quiet で省略しました", result.StandardError, StringComparison.Ordinal);
+    }
+
     private static Task<ProcessResult> RunAsync(params string[] arguments) => RunAsync(new RunOptions(), arguments);
 
     private static async Task<ProcessResult> RunAsync(RunOptions options, params string[] arguments)

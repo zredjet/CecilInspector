@@ -71,7 +71,7 @@ public sealed class MultiModuleTests
     {
         using var temp = new TempDirectory();
         var fixture = MultiModuleFixture.Build(temp.Path);
-        var discovery = AssemblyFiles.DiscoverDetailed(fixture.Manifest, true);
+        var discovery = AssemblyFiles.DiscoverDetailed(fixture.Manifest, true, TestContext.Current.CancellationToken);
         using var writer = new StringWriter();
 
         var result = new MetadataDumper().Dump(

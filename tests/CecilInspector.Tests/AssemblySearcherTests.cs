@@ -541,7 +541,9 @@ public sealed class AssemblySearcherTests
         // Up to 97% of the image still loses metadata tables, so the file must be reported as
         // an error (and never crash); only the last percent or so parses with partial hits.
         Assert.Equal(0, result.FilesSucceeded);
-        Assert.Single(result.Errors);
+        // Cecil's BadImageFormatException carries an empty message; the reason is in the inner
+        // exception and must reach the warning line.
+        Assert.False(string.IsNullOrWhiteSpace(Assert.Single(result.Errors).Message));
         Assert.Equal(0, result.TotalMatches);
     }
 

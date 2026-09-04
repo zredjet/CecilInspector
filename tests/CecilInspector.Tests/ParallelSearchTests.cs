@@ -66,6 +66,6 @@ public sealed class ParallelSearchTests
             temp.Path, "Estimate", SearchKinds.All, SearchScope.All, MatchMode.Contains, true, true, SymbolMode.Off,
             10, null, [], Parallelism: 4);
 
-        Assert.ThrowsAny<OperationCanceledException>(() => new AssemblySearcher().Search(options, AssemblyFiles.DiscoverDetailed(temp.Path, true), cancellation.Token));
+        Assert.ThrowsAny<OperationCanceledException>(() => new AssemblySearcher().Search(options, AssemblyFiles.DiscoverDetailed(temp.Path, true, TestContext.Current.CancellationToken), cancellation.Token));
     }
 }

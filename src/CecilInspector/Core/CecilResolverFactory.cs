@@ -40,7 +40,7 @@ internal static class CecilResolverFactory
         IReadOnlyList<string> gacRoots)
     {
         var resolver = new IdentityAwareAssemblyResolver(
-            probeFrameworkLocations: true, gacRoots, fallback: null, ownsFallback: false, TraceRequested());
+            probeFrameworkLocations: true, gacRoots, fallback: null, ownsFallback: false, DebugSwitch.IsEnabled);
         AddDirectories(resolver, frameworkDirectories);
         return resolver;
     }
@@ -88,7 +88,7 @@ internal static class CecilResolverFactory
         bool ownsFallback)
     {
         var resolver = new IdentityAwareAssemblyResolver(
-            probeFrameworkLocations: false, [], frameworkResolver, ownsFallback, TraceRequested());
+            probeFrameworkLocations: false, [], frameworkResolver, ownsFallback, DebugSwitch.IsEnabled);
         AddDirectories(
             resolver,
             [Path.GetDirectoryName(Path.GetFullPath(targetFile))!, .. referenceDirectories, .. discoveredDirectories]);
@@ -111,8 +111,6 @@ internal static class CecilResolverFactory
             }
         }
     }
-
-    private static bool TraceRequested() => Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
 }
 
 /// <summary>
@@ -404,7 +402,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
             // Like Cecil's base resolver, an invalid or unreadable candidate does not prevent
             // probing the remaining extensions and locations. Cecil reports a truncated or
             // fuzzed candidate through the same runtime exceptions as any broken image.
-            Reject(name, $"{candidatePath} は読み込めません ({ex.Message})");
+            Reject(name, $"{candidatePath} は読み込めません ({ExceptionPolicy.UserMessage(ex)})");
         }
         finally
         {

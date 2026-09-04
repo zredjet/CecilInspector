@@ -12,7 +12,7 @@ public sealed class AssemblyFilesTests
     {
         using var temp = new TempDirectory();
 
-        var error = Assert.Throws<ArgumentException>(() => AssemblyFiles.DiscoverDetailed(temp.Path, true));
+        var error = Assert.Throws<ArgumentException>(() => AssemblyFiles.DiscoverDetailed(temp.Path, true, TestContext.Current.CancellationToken));
 
         Assert.Contains("対象アセンブリ", error.Message, StringComparison.Ordinal);
     }
@@ -23,7 +23,7 @@ public sealed class AssemblyFilesTests
         using var temp = new TempDirectory();
 
         var error = Assert.Throws<ArgumentException>(() =>
-            AssemblyFiles.DiscoverDetailed(temp.File("missing.dll"), true));
+            AssemblyFiles.DiscoverDetailed(temp.File("missing.dll"), true, TestContext.Current.CancellationToken));
 
         Assert.Contains("入力パスが見つかりません", error.Message, StringComparison.Ordinal);
     }
@@ -35,7 +35,7 @@ public sealed class AssemblyFilesTests
         var assembly = temp.File("single.dll");
         File.Copy(ThisAssembly, assembly);
 
-        var result = AssemblyFiles.DiscoverDetailed(assembly, true);
+        var result = AssemblyFiles.DiscoverDetailed(assembly, true, TestContext.Current.CancellationToken);
 
         Assert.Equal([assembly], result.Files);
         Assert.Equal(1, result.FileCount);
@@ -54,7 +54,7 @@ public sealed class AssemblyFilesTests
         File.WriteAllText(Path.Combine(nested, "c.dll"), string.Empty);
         temp.CreateSubdirectory("empty");
 
-        var result = AssemblyFiles.DiscoverDetailed(temp.Path, true);
+        var result = AssemblyFiles.DiscoverDetailed(temp.Path, true, TestContext.Current.CancellationToken);
 
         Assert.Equal(
             [temp.File("a.netmodule"), temp.File("b.exe"), Path.Combine(nested, "c.dll")],
@@ -71,7 +71,7 @@ public sealed class AssemblyFilesTests
         File.WriteAllText(temp.File("root.dll"), string.Empty);
         File.WriteAllText(Path.Combine(nested, "nested.dll"), string.Empty);
 
-        var result = AssemblyFiles.DiscoverDetailed(temp.Path, false);
+        var result = AssemblyFiles.DiscoverDetailed(temp.Path, false, TestContext.Current.CancellationToken);
 
         Assert.Equal([temp.File("root.dll")], result.Files);
         Assert.Equal([temp.Path], result.SearchDirectories);
@@ -87,7 +87,7 @@ public sealed class AssemblyFilesTests
         SymbolicLinks.SkipUnlessSupported(temp);
         Directory.CreateSymbolicLink(Path.Combine(root, "linked"), target);
 
-        var result = AssemblyFiles.DiscoverDetailed(root, true);
+        var result = AssemblyFiles.DiscoverDetailed(root, true, TestContext.Current.CancellationToken);
 
         Assert.Empty(result.Files);
         Assert.Single(result.Errors);
@@ -101,7 +101,7 @@ public sealed class AssemblyFilesTests
         var assembly = temp.File("snapshot.dll");
         File.Copy(ThisAssembly, assembly);
 
-        var result = AssemblyFiles.DiscoverDetailed(temp.Path, true);
+        var result = AssemblyFiles.DiscoverDetailed(temp.Path, true, TestContext.Current.CancellationToken);
         Directory.Delete(temp.Path, true);
 
         Assert.Equal(1, result.FileCount);
@@ -119,7 +119,7 @@ public sealed class AssemblyFilesTests
         SymbolicLinks.SkipUnlessSupported(temp);
         File.CreateSymbolicLink(Path.Combine(root, "linked.dll"), target);
 
-        var result = AssemblyFiles.DiscoverDetailed(root, true);
+        var result = AssemblyFiles.DiscoverDetailed(root, true, TestContext.Current.CancellationToken);
 
         Assert.Empty(result.Files);
         var error = Assert.Single(result.Errors);
@@ -135,8 +135,55 @@ public sealed class AssemblyFilesTests
         SymbolicLinks.SkipUnlessSupported(temp);
         Directory.CreateSymbolicLink(linkedRoot, target);
 
-        var error = Assert.Throws<ArgumentException>(() => AssemblyFiles.DiscoverDetailed(linkedRoot, true));
+        var error = Assert.Throws<ArgumentException>(() => AssemblyFiles.DiscoverDetailed(linkedRoot, true, TestContext.Current.CancellationToken));
 
         Assert.Contains("シンボリックリンク", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DiscoveryObservesCancellation()
+    {
+        using var temp = new TempDirectory();
+        File.Copy(ThisAssembly, temp.File("root.dll"));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        Assert.ThrowsAny<OperationCanceledException>(() => AssemblyFiles.DiscoverDetailed(temp.Path, true, cancellation.Token));
+    }
+
+    [Fact]
+    public void SymbolicLinkToANonAssemblyFileIsIgnoredSilently()
+    {
+        // Only links the scan would otherwise follow are gaps in the result; a linked README
+        // or native library must not turn a clean run into a partial one.
+        using var temp = new TempDirectory();
+        var root = temp.CreateSubdirectory("root");
+        File.Copy(ThisAssembly, Path.Combine(root, "root.dll"));
+        var target = temp.File("target.txt");
+        File.WriteAllText(target, "text");
+        SymbolicLinks.SkipUnlessSupported(temp);
+        File.CreateSymbolicLink(Path.Combine(root, "linked.txt"), target);
+
+        var result = AssemblyFiles.DiscoverDetailed(root, true, TestContext.Current.CancellationToken);
+
+        Assert.Empty(result.Errors);
+        Assert.Single(result.Files);
+    }
+
+    [Fact]
+    public void DirectorySymbolicLinkIsIgnoredWhenNotRecursive()
+    {
+        using var temp = new TempDirectory();
+        var root = temp.CreateSubdirectory("root");
+        File.Copy(ThisAssembly, Path.Combine(root, "root.dll"));
+        var target = temp.CreateSubdirectory("target");
+        File.Copy(ThisAssembly, Path.Combine(target, "target.dll"));
+        SymbolicLinks.SkipUnlessSupported(temp);
+        Directory.CreateSymbolicLink(Path.Combine(root, "linked"), target);
+
+        var result = AssemblyFiles.DiscoverDetailed(root, false, TestContext.Current.CancellationToken);
+
+        Assert.Empty(result.Errors);
+        Assert.Single(result.Files);
     }
 }

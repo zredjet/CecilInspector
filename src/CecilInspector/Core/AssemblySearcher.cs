@@ -77,9 +77,12 @@ public sealed class AssemblySearcher
                     new ParallelOptions { MaxDegreeOfParallelism = parallelism, CancellationToken = cancellationToken },
                     index => outcomes[index] = Scan(index));
             }
-            catch (AggregateException ex) when (ex.InnerExceptions.Count == 1)
+            catch (AggregateException ex)
             {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw();
+                // The files failed for the same reason; surface one of them so the caller sees
+                // the original type (exit code 1 for a query timeout, 130 for a cancellation)
+                // rather than the wrapper, exactly as the sequential loop above would.
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ExceptionPolicy.Unwrap(ex)).Throw();
             }
         }
 
@@ -194,7 +197,7 @@ public sealed class AssemblySearcher
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
-            errors.Add(new ScanError(file, ex.Message, ex));
+            errors.Add(new ScanError(file, ExceptionPolicy.UserMessage(ex), ex));
         }
         finally
         {

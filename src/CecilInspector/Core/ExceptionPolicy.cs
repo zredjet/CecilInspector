@@ -14,6 +14,39 @@ internal static class ExceptionPolicy
         OutOfMemoryException or AccessViolationException or AppDomainUnloadedException;
 
     /// <summary>
+    /// The exception to surface for a failed parallel scan. Parallel.For reports every failing
+    /// file in one AggregateException, and the files fail for the same reason (a query timeout,
+    /// a report write failure), so one representative is what the caller and the exit code
+    /// need. A fatal failure wins, then any failure that is not a cancellation, so a worker's
+    /// exception is never hidden behind the cancellations it caused on the other workers.
+    /// </summary>
+    public static Exception Unwrap(AggregateException exception)
+    {
+        var inner = exception.Flatten().InnerExceptions;
+        return inner.FirstOrDefault(IsFatal)
+            ?? inner.FirstOrDefault(candidate => candidate is not OperationCanceledException)
+            ?? (inner.Count > 0 ? inner[0] : exception);
+    }
+
+    /// <summary>
+    /// The message to show for a failure. Cecil raises BadImageFormatException with an empty
+    /// message for a truncated image and keeps the reason in the inner exception, so the first
+    /// non-empty message along the chain is used, and the type name when there is none.
+    /// </summary>
+    public static string UserMessage(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (!string.IsNullOrWhiteSpace(current.Message))
+            {
+                return current.Message;
+            }
+        }
+
+        return exception.GetType().Name;
+    }
+
+    /// <summary>
     /// True for failures that should be recorded as a warning for the current file and let the
     /// scan continue. Query and report-writing failures are never per-file problems.
     /// </summary>
@@ -51,6 +84,16 @@ internal static class ExceptionPolicy
         exception.TargetSite?.DeclaringType?.Assembly == CecilAssembly ||
         new StackTrace(exception).GetFrames().Any(frame =>
             frame.GetMethod()?.DeclaringType?.Assembly == CecilAssembly);
+}
+
+/// <summary>
+/// CECIL_INSPECTOR_DEBUG=1 prints the exception behind every diagnostic and traces assembly
+/// resolution; it also overrides --quiet, because the --quiet summary points at it for details.
+/// Read on every use so in-process tests observe the current environment.
+/// </summary>
+internal static class DebugSwitch
+{
+    public static bool IsEnabled => Environment.GetEnvironmentVariable("CECIL_INSPECTOR_DEBUG") == "1";
 }
 
 public sealed class SearchQueryException : ArgumentException

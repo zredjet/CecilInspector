@@ -52,7 +52,7 @@ internal static class CecilModuleReader
                 // processing can succeed here. If the assembly itself is invalid, preserve the
                 // original exception instead of replacing it with the retry's exception.
                 var module = ReadCore(filePath, false, false, resolver);
-                symbolWarning = $"PDBを読み込めなかったためシンボルなしで解析しました: {firstException.Message}";
+                symbolWarning = $"PDBを読み込めなかったためシンボルなしで解析しました: {ExceptionPolicy.UserMessage(firstException)}";
                 return module;
             }
             catch (Exception retryException) when (!ExceptionPolicy.IsFatal(retryException))

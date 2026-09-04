@@ -64,7 +64,7 @@ public sealed class MetadataDumper
             }
             catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
             {
-                errors.Add(new ScanError(file, ex.Message, ex));
+                errors.Add(new ScanError(file, ExceptionPolicy.UserMessage(ex), ex));
                 writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(file)}");
             }
         }

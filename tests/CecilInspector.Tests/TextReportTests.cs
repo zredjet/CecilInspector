@@ -113,7 +113,7 @@ public sealed class TextReportTests
         var result = new SearchResult([hit], 1, [new HitCount(HitScope.Reference, HitKind.Method, 1)], [], 1, 1, 0, []);
         using var writer = new StringWriter();
 
-        TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi);
+        TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi, TestContext.Current.CancellationToken);
 
         var lines = writer.ToString().Split(Environment.NewLine);
         Assert.Contains("\u001b[35m[reference/method]\u001b[0m \u001b[1mT::Save() : System.Void\u001b[0m", lines);
@@ -135,7 +135,7 @@ public sealed class TextReportTests
         var result = new SearchResult([hit], 1, [new HitCount(HitScope.Definition, HitKind.Method, 1)], [], 1, 1, 1, []);
         using var writer = new StringWriter();
 
-        TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi);
+        TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi, TestContext.Current.CancellationToken);
 
         Assert.DoesNotContain('\u001b', writer.ToString());
     }
@@ -163,5 +163,61 @@ public sealed class TextReportTests
         var text = writer.ToString();
         Assert.Contains("[definition/type] Bad\\u202EName", text, StringComparison.Ordinal);
         Assert.DoesNotContain("省略", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteSearchObservesCancellationBetweenHits()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Save", SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains,
+            true, true, SymbolMode.Off, 10, null, []);
+        SearchHit Hit(string symbol) => new("in.dll", "In", HitScope.Definition, HitKind.Method, symbol, null, null, null);
+        var result = new SearchResult(
+            [Hit("T::First() : System.Void"), Hit("T::Second() : System.Void")],
+            2, [new HitCount(HitScope.Definition, HitKind.Method, 2)], [], 1, 1, 0, []);
+        using var cancellation = new CancellationTokenSource();
+        using var writer = new CancellingWriter("T::First", cancellation);
+
+        Assert.ThrowsAny<OperationCanceledException>(() =>
+            TextReport.WriteSearch(writer, result, options, ReportStyle.None, cancellation.Token));
+
+        Assert.Contains("T::First", writer.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("T::Second", writer.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>Cancels the given source once the marker has been written (a Ctrl-C mid-report).</summary>
+    private sealed class CancellingWriter(string marker, CancellationTokenSource cancellation) : StringWriter
+    {
+        public override void Write(char value)
+        {
+            base.Write(value);
+            CancelWhenMarkerWritten();
+        }
+
+        public override void Write(string? value)
+        {
+            base.Write(value);
+            CancelWhenMarkerWritten();
+        }
+
+        public override void Write(char[] buffer, int index, int count)
+        {
+            base.Write(buffer, index, count);
+            CancelWhenMarkerWritten();
+        }
+
+        public override void Write(ReadOnlySpan<char> buffer)
+        {
+            base.Write(buffer);
+            CancelWhenMarkerWritten();
+        }
+
+        private void CancelWhenMarkerWritten()
+        {
+            if (!cancellation.IsCancellationRequested && GetStringBuilder().ToString().Contains(marker, StringComparison.Ordinal))
+            {
+                cancellation.Cancel();
+            }
+        }
     }
 }

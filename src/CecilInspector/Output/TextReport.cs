@@ -9,8 +9,11 @@ public static class TextReport
     public static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options) =>
         WriteSearch(writer, result, options, ReportStyle.None);
 
-    internal static void WriteSearch(TextWriter writer, SearchResult result, SearchOptions options, ReportStyle style)
+    internal static void WriteSearch(
+        TextWriter writer, SearchResult result, SearchOptions options, ReportStyle style,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         writer = new GuardedTextWriter(writer);
         var msBuild = options.Format == ReportFormat.MsBuild;
         if (msBuild)
@@ -51,6 +54,9 @@ public static class TextReport
 
         foreach (var hit in result.Hits)
         {
+            // A large report can take longer to write than to compute; an interrupt here must
+            // still discard the partial --output file and exit with 130.
+            cancellationToken.ThrowIfCancellationRequested();
             if (msBuild)
             {
                 WriteMsBuildHit(writer, hit);

@@ -22,7 +22,8 @@ public static class AssemblyFiles
     /// <summary>True for the file extensions that discovery treats as assemblies (.dll/.exe/.netmodule).</summary>
     public static bool IsAssemblyFileName(string path) => Extensions.Contains(Path.GetExtension(path));
 
-    public static AssemblyDiscoveryResult DiscoverDetailed(string inputPath, bool recursive)
+    public static AssemblyDiscoveryResult DiscoverDetailed(
+        string inputPath, bool recursive, CancellationToken cancellationToken = default)
     {
         var fullPath = Path.GetFullPath(inputPath);
         if (File.Exists(fullPath))
@@ -53,6 +54,7 @@ public static class AssemblyFiles
 
         while (directoriesToVisit.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var directory = directoriesToVisit.Pop();
             string[] entries;
             try
@@ -69,6 +71,9 @@ public static class AssemblyFiles
             Array.Sort(entries, ComparePaths);
             for (var index = entries.Length - 1; index >= 0; index--)
             {
+                // One attribute lookup per entry: a large flat folder is where an interrupt
+                // during discovery has to be noticed.
+                cancellationToken.ThrowIfCancellationRequested();
                 var entry = entries[index];
                 FileAttributes attributes;
                 try
@@ -81,22 +86,24 @@ public static class AssemblyFiles
                     continue;
                 }
 
+                var isDirectory = attributes.HasFlag(FileAttributes.Directory);
+                if (isDirectory ? !recursive : !Extensions.Contains(Path.GetExtension(entry)))
+                {
+                    // Nothing this scan would look at, so a link there is not a gap either.
+                    continue;
+                }
+
                 if (attributes.HasFlag(FileAttributes.ReparsePoint))
                 {
                     errors.Add(new ScanError(entry, "シンボリックリンク/再解析ポイントは走査・解析しません。"));
                     continue;
                 }
 
-                if (attributes.HasFlag(FileAttributes.Directory))
+                if (isDirectory)
                 {
-                    if (!recursive)
-                    {
-                        continue;
-                    }
-
                     directoriesToVisit.Push(entry);
                 }
-                else if (Extensions.Contains(Path.GetExtension(entry)))
+                else
                 {
                     files.Add(entry);
                     containsAssembly = true;

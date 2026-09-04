@@ -334,6 +334,13 @@ public sealed class CommandLineTests
     }
 
     [Fact]
+    public void ParallelAcceptsValuesAboveTheDefaultCap()
+    {
+        // The cap of eight applies to the default only; an explicit value is the user's choice.
+        Assert.Equal(64, Assert.IsType<SearchOptions>(CommandLine.Parse(["search", "a.dll", "Save", "--parallel", "64"]).Options).Parallelism);
+    }
+
+    [Fact]
     public void DumpDoesNotAcceptParallel()
     {
         var result = CommandLine.Parse(["dump", "a.dll", "--parallel", "2"]);
@@ -500,12 +507,13 @@ public sealed class CommandLineTests
     }
 
     [Fact]
-    public void VersionWithExtraArgumentsIsAnUnknownCommand()
+    public void VersionIgnoresTrailingArgumentsLikeHelp()
     {
-        var result = CommandLine.Parse(["--version", "extra"]);
+        var result = CommandLine.Parse(["--version", "--quiet"]);
 
-        Assert.False(result.ShowVersion);
-        Assert.Contains("不明なコマンド", result.Error, StringComparison.Ordinal);
+        Assert.True(result.ShowVersion);
+        Assert.Null(result.Error);
+        Assert.True(CommandLine.Parse(["--help", "extra"]).IsHelp);
     }
 
     [Theory]
