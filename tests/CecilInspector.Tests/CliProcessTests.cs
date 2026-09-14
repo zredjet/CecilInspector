@@ -1,7 +1,9 @@
 using CecilInspector.Cli;
 using CecilInspector.Core;
+using CecilInspector.Output;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -238,6 +240,54 @@ public sealed class CliProcessTests
             new Regex(@"^.+\(\d+,\d+\): info CI0002: \[reference/method\] .* \(in .*\) @ IL_[0-9A-F]{4}\r?$", RegexOptions.Multiline),
             result.StandardOutput);
         Assert.DoesNotContain("  source:", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CsvFormatWritesBomHeaderAndRowsToStdoutAndSummaryToStderr()
+    {
+        using var temp = new TempDirectory();
+        var output = temp.File("hits.csv");
+
+        var result = await RunAsync(
+            "search", TestAssembly, "EstimateTarget", "--kind", "method", "--match", "exact", "--scope", "all",
+            "--format", "csv", "--output", output);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal([0xEF, 0xBB, 0xBF], result.StandardOutputBytes[..3]);
+        Assert.Single(result.StandardOutput, '\uFEFF');
+        var lines = result.StandardOutputLines;
+        Assert.Equal("\uFEFF" + Csv.Header, lines[0]);
+        // The full assembly name carries commas, so every row has one quoted cell.
+        Assert.Contains(
+            "definition,method,CecilInspector.Tests.SearchFixture::EstimateTarget(System.Int32) : System.Int32,,\"CecilInspector.Tests, Version=",
+            lines[1],
+            StringComparison.Ordinal);
+        Assert.Contains(lines, line =>
+            line.StartsWith("reference,method,", StringComparison.Ordinal) &&
+            Regex.IsMatch(line, @",\d+,\d+,IL_[0-9A-F]{4}$"));
+        Assert.DoesNotContain(lines, line => line.StartsWith("Query:", StringComparison.Ordinal) ||
+                                             line.StartsWith("Matches:", StringComparison.Ordinal) ||
+                                             line.Contains("省略", StringComparison.Ordinal));
+        Assert.Contains("Query: EstimateTarget", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("Matches: 3", result.StandardError, StringComparison.Ordinal);
+        Assert.Equal(result.StandardOutputBytes, await File.ReadAllBytesAsync(output, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task CsvFormatKeepsSummaryOnStderrWithQuietAndMaxResults()
+    {
+        var result = await RunAsync(
+            "search", TestAssembly, "Estimate", "--kind", "all", "--max-results", "1", "--symbols", "off",
+            "--format", "csv", "-q");
+
+        Assert.Equal(0, result.ExitCode);
+        var lines = result.StandardOutputLines;
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("\uFEFF" + Csv.Header, lines[0]);
+        Assert.StartsWith("definition,", lines[1], StringComparison.Ordinal);
+        Assert.Contains("Matches: ", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("--max-resultsで変更できます", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("警告:", result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -494,13 +544,19 @@ public sealed class CliProcessTests
 
     private static Task<ProcessResult> RunAsync(params string[] arguments) => RunAsync(new RunOptions(), arguments);
 
+    /// <summary>
+    /// Captures stdout as bytes and decodes it explicitly: Process.StandardOutput is a
+    /// BOM-detecting StreamReader that would silently drop the csv report's byte order mark.
+    /// </summary>
     private static async Task<ProcessResult> RunAsync(RunOptions options, params string[] arguments)
     {
         using var process = Start(options, arguments);
-        var standardOutput = process.StandardOutput.ReadToEndAsync();
-        var standardError = process.StandardError.ReadToEndAsync();
+        using var standardOutput = new MemoryStream();
+        var copy = process.StandardOutput.BaseStream.CopyToAsync(standardOutput, TestContext.Current.CancellationToken);
+        var standardError = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
         await WaitForExitAsync(process, arguments);
-        return new ProcessResult(process.ExitCode, await standardOutput, await standardError);
+        await copy;
+        return new ProcessResult(process.ExitCode, standardOutput.ToArray(), await standardError);
     }
 
     private static Process Start(params string[] arguments) => Start(new RunOptions(), arguments);
@@ -554,5 +610,13 @@ public sealed class CliProcessTests
 
     private sealed record RunOptions(string? WorkingDirectory = null, IReadOnlyDictionary<string, string>? Environment = null);
 
-    private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
+    private sealed record ProcessResult(int ExitCode, byte[] StandardOutputBytes, string StandardError)
+    {
+        /// <summary>The tool writes UTF-8 without a preamble; GetString keeps any BOM it emits itself.</summary>
+        public string StandardOutput => new UTF8Encoding(false).GetString(StandardOutputBytes);
+
+        /// <summary>Lines of stdout without the platform line ending.</summary>
+        public string[] StandardOutputLines =>
+            StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.TrimEnd('\r')).ToArray();
+    }
 }

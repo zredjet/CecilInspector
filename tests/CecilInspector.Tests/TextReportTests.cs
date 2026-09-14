@@ -123,16 +123,18 @@ public sealed class TextReportTests
         Assert.Contains("\u001b[90m  il: IL_001A\u001b[0m", lines);
     }
 
-    [Fact]
-    public void MsBuildFormatIsNeverColored()
+    [Theory]
+    [InlineData(ReportFormat.MsBuild)]
+    [InlineData(ReportFormat.Csv)]
+    public void MachineReadableFormatsAreNeverColored(ReportFormat format)
     {
         var options = new SearchOptions(
             "in.dll", "Save", SearchKinds.Method, SearchScope.All, MatchMode.Exact,
-            true, true, SymbolMode.Auto, 10, null, [], ReportFormat.MsBuild);
+            true, true, SymbolMode.Auto, 10, null, [], format);
         var hit = new SearchHit(
-            "in.dll", "In", HitScope.Definition, HitKind.Method, "T::Save() : System.Void",
-            null, new SourceLocation("a.cs", 30, 0), null);
-        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Definition, HitKind.Method, 1)], [], 1, 1, 1, []);
+            "in.dll", "In", HitScope.Reference, HitKind.Method, "T::Save() : System.Void",
+            "T::Caller() : System.Void", new SourceLocation("a.cs", 12, 5), 0x1A);
+        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Reference, HitKind.Method, 1)], [], 1, 1, 1, []);
         using var writer = new StringWriter();
 
         TextReport.WriteSearch(writer, result, options, ReportStyle.Ansi, TestContext.Current.CancellationToken);
@@ -166,11 +168,142 @@ public sealed class TextReportTests
     }
 
     [Fact]
-    public void WriteSearchObservesCancellationBetweenHits()
+    public void CsvFormatWritesBomHeaderAndOneRowPerHit()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Save", SearchKinds.All, SearchScope.All, MatchMode.Exact,
+            true, true, SymbolMode.Auto, 1, null, [], ReportFormat.Csv);
+        SearchHit[] hits =
+        [
+            new("in.dll", "In", HitScope.Reference, HitKind.Method, "T::Save() : System.Void",
+                "T::Caller() : System.Void", new SourceLocation("a.cs", 12, 5), 0x1A),
+            new("in.dll", "In", HitScope.Definition, HitKind.Method, "T::Save() : System.Void",
+                null, new SourceLocation("a.cs", 30, 0), null),
+            new("in.dll", "In", HitScope.Definition, HitKind.Type, "T", null, null, null),
+        ];
+        var result = new SearchResult(hits, 4, [new HitCount(HitScope.Reference, HitKind.Method, 4)], [], 1, 1, 1, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        var text = writer.ToString();
+        Assert.Equal('\uFEFF', text[0]);
+        Assert.Single(text, '\uFEFF');
+        var lines = text.Split(Environment.NewLine);
+        Assert.Equal(
+            [
+                "\uFEFF" + Csv.Header,
+                "reference,method,T::Save() : System.Void,T::Caller() : System.Void,In,in.dll,a.cs,12,5,IL_001A",
+                "definition,method,T::Save() : System.Void,,In,in.dll,a.cs,30,,",
+                "definition,type,T,,In,in.dll,,,,",
+                "",
+            ],
+            lines);
+    }
+
+    [Fact]
+    public void CsvFormatQuotesGenericSymbols()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Func", SearchKinds.All, SearchScope.Definitions, MatchMode.Contains,
+            true, true, SymbolMode.Off, 10, null, [], ReportFormat.Csv);
+        var hit = new SearchHit(
+            "in.dll", "In", HitScope.Definition, HitKind.Method,
+            "T::Map(System.Func`2<System.Int32, System.String>) : System.Void", null, null, null);
+        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Definition, HitKind.Method, 1)], [], 1, 1, 0, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        Assert.Contains(
+            "definition,method,\"T::Map(System.Func`2<System.Int32, System.String>) : System.Void\",,In,in.dll,,,,",
+            writer.ToString().Split(Environment.NewLine));
+    }
+
+    [Fact]
+    public void CsvFormatCannotBeInjectedThroughSymbols()
+    {
+        var options = new SearchOptions(
+            "in.dll", "x", SearchKinds.All, SearchScope.Definitions, MatchMode.Contains,
+            true, true, SymbolMode.Off, 10, null, [], ReportFormat.Csv);
+        var hit = new SearchHit(
+            "in.dll", "In", HitScope.Definition, HitKind.Type, "Bad\nevil,\"x\"", null, null, null);
+        var result = new SearchResult([hit], 1, [new HitCount(HitScope.Definition, HitKind.Type, 1)], [], 1, 1, 0, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        var lines = writer.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("definition,type,\"Bad\\nevil,\"\"x\"\"\",,In,in.dll,,,,", lines[1]);
+    }
+
+    [Fact]
+    public void CsvFormatWithNoHitsWritesOnlyBomAndHeader()
+    {
+        var options = new SearchOptions(
+            "in.dll", "x", SearchKinds.All, SearchScope.Definitions, MatchMode.Contains,
+            true, true, SymbolMode.Off, 10, null, [], ReportFormat.Csv);
+        var result = new SearchResult([], 0, [], [], 1, 1, 0, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSearch(writer, result, options);
+
+        Assert.Equal("\uFEFF" + Csv.Header + Environment.NewLine, writer.ToString());
+    }
+
+    [Fact]
+    public void WriteSummaryIncludesQueryCountsBreakdownAndTruncationNote()
+    {
+        var options = new SearchOptions(
+            "in.dll", "Save", SearchKinds.Method, SearchScope.All, MatchMode.Exact,
+            false, true, SymbolMode.Off, 1, null, [], ReportFormat.Csv);
+        var hit = new SearchHit("in.dll", "In", HitScope.Reference, HitKind.Method, "T::Save() : System.Void", null, null, null);
+        var result = new SearchResult(
+            [hit], 5, [new HitCount(HitScope.Reference, HitKind.Method, 5)], [], 1, 1, 0, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSummary(writer, result, options);
+
+        Assert.Equal(
+            [
+                "Query: Save",
+                "Kinds: Method / Scope: All / Match: Exact (case sensitive)",
+                "Assemblies: 1/1 succeeded, symbols not read, 0 errors",
+                "Matches: 5",
+                "Breakdown: reference/method=5",
+                "... 4件を省略しました。--max-resultsで変更できます。",
+                "",
+            ],
+            writer.ToString().Split(Environment.NewLine));
+    }
+
+    [Fact]
+    public void WriteSummaryOmitsBreakdownAndNoteWhenNothingWasDropped()
+    {
+        var options = new SearchOptions(
+            "in.dll", "x", SearchKinds.All, SearchScope.Definitions, MatchMode.Contains,
+            true, true, SymbolMode.Off, 10, null, [], ReportFormat.Csv);
+        var result = new SearchResult([], 0, [], [], 1, 1, 0, []);
+        using var writer = new StringWriter();
+
+        TextReport.WriteSummary(writer, result, options);
+
+        var text = writer.ToString();
+        Assert.Contains("Matches: 0", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("Breakdown:", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("省略", text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(ReportFormat.Text)]
+    [InlineData(ReportFormat.MsBuild)]
+    [InlineData(ReportFormat.Csv)]
+    public void WriteSearchObservesCancellationBetweenHits(ReportFormat format)
     {
         var options = new SearchOptions(
             "in.dll", "Save", SearchKinds.Method, SearchScope.Definitions, MatchMode.Contains,
-            true, true, SymbolMode.Off, 10, null, []);
+            true, true, SymbolMode.Off, 10, null, [], format);
         SearchHit Hit(string symbol) => new("in.dll", "In", HitScope.Definition, HitKind.Method, symbol, null, null, null);
         var result = new SearchResult(
             [Hit("T::First() : System.Void"), Hit("T::Second() : System.Void")],

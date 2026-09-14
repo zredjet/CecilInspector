@@ -61,12 +61,18 @@ try
     IReadOnlyList<ScanError> errors;
     IReadOnlyList<ScanError> warnings;
     int filesSucceeded;
+    (SearchResult Result, SearchOptions Options)? csvSummary = null;
     switch (options)
     {
         case SearchOptions searchOptions:
             {
                 var result = new AssemblySearcher().Search(searchOptions, discovery, cancellation.Token);
                 TextReport.WriteSearch(writer, result, searchOptions, style, cancellation.Token);
+                if (searchOptions.Format == ReportFormat.Csv)
+                {
+                    csvSummary = (result, searchOptions);
+                }
+
                 (errors, warnings, filesSucceeded) = (result.Errors, result.Warnings, result.FilesSucceeded);
                 break;
             }
@@ -82,6 +88,14 @@ try
 
     writer.Flush();
     reportFile?.Commit();
+    if (csvSummary is (var csvResult, var csvOptions))
+    {
+        // A csv report carries nothing but the table, so the counts go to stderr, and only once
+        // the report file exists: a failed commit must not leave a "Matches: N" behind for a
+        // report that was never produced.
+        TextReport.WriteSummary(Console.Error, csvResult, csvOptions);
+    }
+
     if (options.Quiet && !DebugSwitch.IsEnabled)
     {
         WriteDiagnosticSummary(errors.Count, warnings.Count);

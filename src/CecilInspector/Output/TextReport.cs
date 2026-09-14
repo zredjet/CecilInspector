@@ -1,6 +1,7 @@
 using CecilInspector.Cli;
 using CecilInspector.Core;
 using System.Globalization;
+using System.Text;
 
 namespace CecilInspector.Output;
 
@@ -15,16 +16,73 @@ public static class TextReport
     {
         cancellationToken.ThrowIfCancellationRequested();
         writer = new GuardedTextWriter(writer);
-        var msBuild = options.Format == ReportFormat.MsBuild;
-        if (msBuild)
+        var format = options.Format;
+        if (format != ReportFormat.Text)
         {
-            // Machine-readable: problem matchers must see the bare path(line,col): prefix.
+            // Only the human-readable report is styled: problem matchers must see the bare
+            // path(line,col): prefix, and a csv cell must not carry escape sequences.
             style = ReportStyle.None;
         }
-        else
+
+        var row = new StringBuilder();
+        switch (format)
         {
-            // In msbuild format the query is the one header value under the user's control, and a
-            // query shaped like "x(1,1): error X: y" would be picked up by problem matchers.
+            case ReportFormat.Csv:
+                // Only the table goes to stdout (and the --output file); the caller prints the
+                // summary lines elsewhere (Program: stderr, after the report file is committed).
+                writer.Write(Csv.ByteOrderMark);
+                writer.WriteLine(Csv.Header);
+                break;
+            default:
+                // In msbuild format the query is the one header value under the user's control,
+                // and a query shaped like "x(1,1): error X: y" would be picked up by problem
+                // matchers.
+                WriteHeader(writer, result, options, style, includeQuery: format != ReportFormat.MsBuild);
+                writer.WriteLine();
+                break;
+        }
+
+        foreach (var hit in result.Hits)
+        {
+            // A large report can take longer to write than to compute; an interrupt here must
+            // still discard the partial --output file and exit with 130.
+            cancellationToken.ThrowIfCancellationRequested();
+            switch (format)
+            {
+                case ReportFormat.Csv:
+                    WriteCsvHit(writer, row, hit);
+                    break;
+                case ReportFormat.MsBuild:
+                    WriteMsBuildHit(writer, hit);
+                    break;
+                default:
+                    WriteTextHit(writer, hit, style);
+                    break;
+            }
+        }
+
+        if (format != ReportFormat.Csv)
+        {
+            WriteTruncationNote(writer, result, style);
+        }
+    }
+
+    /// <summary>
+    /// The header lines and truncation note of the text report, unstyled. The csv format keeps
+    /// them off stdout; the caller prints them here (on stderr) once the report exists, so the
+    /// total count and the "N件を省略" notice are still visible, --quiet or not.
+    /// </summary>
+    public static void WriteSummary(TextWriter writer, SearchResult result, SearchOptions options)
+    {
+        WriteHeader(writer, result, options, ReportStyle.None, includeQuery: true);
+        WriteTruncationNote(writer, result, ReportStyle.None);
+    }
+
+    private static void WriteHeader(
+        TextWriter writer, SearchResult result, SearchOptions options, ReportStyle style, bool includeQuery)
+    {
+        if (includeQuery)
+        {
             writer.WriteLine(
                 style.Apply(ReportPart.Header, "Query: ") +
                 style.Apply(ReportPart.Symbol, TextSanitizer.Escape(options.Query)));
@@ -45,28 +103,13 @@ public static class TextReport
         if (result.TotalMatches > 0)
         {
             var breakdown = result.Counts.Select(count =>
-                $"{count.Scope.ToString().ToLowerInvariant()}/" +
-                $"{count.Kind.ToString().ToLowerInvariant()}={count.Count}");
+                $"{ScopeName(count.Scope)}/{KindName(count.Kind)}={count.Count}");
             writer.WriteLine(style.Apply(ReportPart.Header, $"Breakdown: {string.Join(", ", breakdown)}"));
         }
+    }
 
-        writer.WriteLine();
-
-        foreach (var hit in result.Hits)
-        {
-            // A large report can take longer to write than to compute; an interrupt here must
-            // still discard the partial --output file and exit with 130.
-            cancellationToken.ThrowIfCancellationRequested();
-            if (msBuild)
-            {
-                WriteMsBuildHit(writer, hit);
-            }
-            else
-            {
-                WriteTextHit(writer, hit, style);
-            }
-        }
-
+    private static void WriteTruncationNote(TextWriter writer, SearchResult result, ReportStyle style)
+    {
         if (result.TotalMatches > result.Hits.Count)
         {
             writer.WriteLine(style.Apply(
@@ -130,6 +173,31 @@ public static class TextReport
         writer.WriteLine($"{TextSanitizer.Escape(hit.Location.ToMsBuildString())}: info {code}: {message}");
     }
 
-    private static string Label(SearchHit hit) =>
-        $"[{hit.Scope.ToString().ToLowerInvariant()}/{hit.Kind.ToString().ToLowerInvariant()}]";
+    /// <summary>
+    /// One row per hit in the column order of <see cref="Csv.Header"/>. Unknown values are empty
+    /// cells; the IL offset keeps the IL_XXXX spelling of the other formats.
+    /// </summary>
+    private static void WriteCsvHit(TextWriter writer, StringBuilder row, SearchHit hit)
+    {
+        Csv.WriteRow(
+            writer,
+            row,
+            ScopeName(hit.Scope),
+            KindName(hit.Kind),
+            hit.Symbol,
+            hit.Container,
+            hit.AssemblyName,
+            hit.AssemblyPath,
+            hit.Location?.Document,
+            hit.Location?.Line.ToString(CultureInfo.InvariantCulture),
+            hit.Location is { HasColumn: true } location ? location.Column.ToString(CultureInfo.InvariantCulture) : null,
+            hit.IlOffset is { } ilOffset ? $"IL_{ilOffset:X4}" : null);
+    }
+
+    private static string Label(SearchHit hit) => $"[{ScopeName(hit.Scope)}/{KindName(hit.Kind)}]";
+
+    /// <summary>The one spelling shared by the text label, the Breakdown line and the csv cells.</summary>
+    private static string ScopeName(HitScope scope) => scope.ToString().ToLowerInvariant();
+
+    private static string KindName(HitKind kind) => kind.ToString().ToLowerInvariant();
 }

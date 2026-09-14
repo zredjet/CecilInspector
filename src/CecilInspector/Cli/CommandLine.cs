@@ -25,9 +25,11 @@ public static class CommandLine
                                  (既定: all、カンマ区切り、複数回指定時は和集合)
           --scope <value>        definitions | references | all (既定: definitions)
           --match <value>        contains | exact | regex (既定: contains)
-          --format <value>       text | msbuild (既定: text)
+          --format <value>       text | msbuild | csv (既定: text)
                                  msbuildはエディターが解釈できる path(line,col): 形式で出力する
                                  (--symbols off とは併用不可)
+                                 csvはUTF-8 BOM付きの見出し行と1件1行のカンマ区切りだけを出力し、
+                                 要約行は標準エラーへ出す
           --case-sensitive       大文字・小文字を区別する (既定: 区別しない)
           --symbols <value>      auto | off | required (既定: auto)
           --max-results <number> 保持して表示する最大件数 (総件数は別途集計、既定: 1000)
@@ -56,6 +58,7 @@ public static class CommandLine
           cecil-inspector search app.dll Save --kind method --scope all --match exact
           cecil-inspector search app.dll -- -Prefixed --match exact
           cecil-inspector search ./bin Save --scope all --format msbuild
+          cecil-inspector search ./bin Save --scope all --format csv --output hits.csv
           cecil-inspector dump app.dll --include-il --output metadata.txt
         """;
 
@@ -169,7 +172,7 @@ public static class CommandLine
                 case "--format":
                     if (!reader.TryTakeEnum(out format))
                     {
-                        return ParseResult.Failure("--formatには text, msbuild を指定してください。");
+                        return ParseResult.Failure("--formatには text, msbuild, csv を指定してください。");
                     }
 
                     break;

@@ -38,11 +38,14 @@ public enum SymbolMode
 /// Search report layout. <see cref="MsBuild"/> prints one hit per line in the
 /// <c>path(line,col): info CODE: message</c> form that Visual Studio's Output window and
 /// VS Code's <c>$msCompile</c> problem matcher turn into clickable locations.
+/// <see cref="Csv"/> prints a UTF-8 BOM, a header row and one comma-separated row per hit, and
+/// nothing else on stdout; the summary lines go to stderr instead.
 /// </summary>
 public enum ReportFormat
 {
     Text,
     MsBuild,
+    Csv,
 }
 
 /// <summary>When the console report is colored. The --output file is never colored.</summary>

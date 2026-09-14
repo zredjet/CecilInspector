@@ -65,6 +65,9 @@ cecil-inspector search app.dll CustomerId --kind property --scope references \
 
 # 正規表現（既定では大文字・小文字を区別しない）
 cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
+
+# 表計算ソフトやスクリプト向けに1件1行のCSVで保存（要約は標準エラーへ）
+cecil-inspector search ./bin Save --kind method --scope all --format csv --output hits.csv
 ```
 
 主要オプション:
@@ -74,7 +77,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 | `--kind`（`--kinds`も可） | `namespace,type,method,property,field,event,all`（カンマ区切り、複数回指定時は和集合） | `all` |
 | `--scope` | `definitions`, `references`, `all` | `definitions` |
 | `--match` | `contains`, `exact`, `regex` | `contains` |
-| `--format` | `text`, `msbuild`（エディターがジャンプできる`path(line,col):`形式。`--symbols off`とは併用不可。名前空間・型・フィールドの定義だけを検索する場合はPDBを読まないため位置なしの行になる） | `text` |
+| `--format` | `text`, `msbuild`（エディターがジャンプできる`path(line,col):`形式。`--symbols off`とは併用不可。名前空間・型・フィールドの定義だけを検索する場合はPDBを読まないため位置なしの行になる）, `csv`（見出し行と1件1行のカンマ区切り。[CSV出力](#csv出力)を参照） | `text` |
 | `--case-sensitive` | 大文字・小文字を区別 | 区別しない |
 | `--symbols` | `auto`, `off`, `required` | `auto` |
 | `--max-results` | メモリに保持して表示する最大件数（総件数は全件集計） | `1000` |
@@ -103,7 +106,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 
 ### 色分け
 
-`text`形式の検索結果は、`--color auto`（既定）のとき標準出力が端末で、環境変数`NO_COLOR`が未設定、`TERM`が`dumb`でない場合にANSIカラーで色分けします。ヒットの行ごとに色を変えるので、参照の`assembly:`（シアン）、`in:`（黄）、`source:`（青）、`il:`（灰）を見分けられます。ラベルは定義が緑、参照がマゼンタ、シンボルは太字です。`dump`では`Assembly:`（太字）、`File:`（シアン）、`Type:`（太字シアン）、`Method:`（黄）の行に色が付き、IL行は灰色になります。`--output`のファイルには常にエスケープシーケンスを入れません。`msbuild`形式は機械可読のため色分けしません。パイプやリダイレクト先で色を付けたい場合は`--color always`、常に無色にしたい場合は`--color never`を指定してください。Windowsの従来コンソールでは仮想端末処理を有効化し、有効化できない場合は無色になります。
+`text`形式の検索結果は、`--color auto`（既定）のとき標準出力が端末で、環境変数`NO_COLOR`が未設定、`TERM`が`dumb`でない場合にANSIカラーで色分けします。ヒットの行ごとに色を変えるので、参照の`assembly:`（シアン）、`in:`（黄）、`source:`（青）、`il:`（灰）を見分けられます。ラベルは定義が緑、参照がマゼンタ、シンボルは太字です。`dump`では`Assembly:`（太字）、`File:`（シアン）、`Type:`（太字シアン）、`Method:`（黄）の行に色が付き、IL行は灰色になります。`--output`のファイルには常にエスケープシーケンスを入れません。`msbuild`形式と`csv`形式は機械可読のため色分けしません。パイプやリダイレクト先で色を付けたい場合は`--color always`、常に無色にしたい場合は`--color never`を指定してください。Windowsの従来コンソールでは仮想端末処理を有効化し、有効化できない場合は無色になります。
 
 ### 終了コードと診断
 
@@ -116,7 +119,7 @@ cecil-inspector search ./bin '^(Save|Update)$' --kind method --match regex
 | `130` | Ctrl-C／SIGTERMなどによる中断（`--output`の一時ファイルは削除済み） |
 | `70` | 内部エラー（想定外の失敗。`--output`の一時ファイルは削除済み。標準エラーのスタックトレースを添えて報告してください） |
 
-検索結果とダンプ本体は標準出力および`--output`へ、診断は標準エラーへ出力します。結果を不完全にした問題（終了コードに影響）は`警告:`、終了コードに影響しない注意（壊れたPDBをスキップしたなど）は`情報:`の接頭辞で出力するので、自動化では接頭辞で区別できます。自動化では終了コード3を「不完全な結果」として扱ってください。環境変数`CECIL_INSPECTOR_DEBUG=1`を設定すると、警告の原因となった例外のスタックトレースと依存アセンブリ解決の追跡も標準エラーへ出力します。
+検索結果とダンプ本体は標準出力および`--output`へ、診断は標準エラーへ出力します。`--format csv`のときだけは、`Query:`／`Kinds:`／`Assemblies:`／`Matches:`／`Breakdown:`の要約行と件数の省略行も標準エラーへ出します（`--quiet`でも省略しません。総件数と省略の有無はここにしか現れないためです）。結果を不完全にした問題（終了コードに影響）は`警告:`、終了コードに影響しない注意（壊れたPDBをスキップしたなど）は`情報:`の接頭辞で出力するので、自動化では接頭辞で区別できます。自動化では終了コード3を「不完全な結果」として扱ってください。環境変数`CECIL_INSPECTOR_DEBUG=1`を設定すると、警告の原因となった例外のスタックトレースと依存アセンブリ解決の追跡も標準エラーへ出力します。
 
 ### PDBと行番号
 
@@ -168,6 +171,33 @@ Releaseビルドの最適化や非同期/イテレーターのステートマシ
 ```
 
 PDBが無い、または記録されたソースパスが手元と異なる場合はリンクになりません。
+
+### CSV出力
+
+`--format csv`を付けると、標準出力（と`--output`のファイル）には見出し行と1ヒット1行のカンマ区切りだけを書き、`Query:`〜`Breakdown:`の要約行と「…件を省略しました」の注記は標準エラーへ出します。表計算ソフトで開いたり、パイプ先のツールで加工したりする用途向けです。
+
+```text
+scope,kind,symbol,container,assembly_name,assembly_path,document,line,column,il_offset
+definition,method,MyApp.CustomerService::Save() : System.Void,,"MyApp, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",./bin/MyApp.dll,C:\src\CustomerService.cs,42,17,
+reference,method,MyApp.CustomerService::Save() : System.Void,MyApp.Controller::Post() : System.Void,"MyApp, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null",./bin/MyApp.dll,C:\src\Controller.cs,88,9,IL_001A
+```
+
+| 列 | 内容 |
+|---|---|
+| `scope` | `definition`（定義）または`reference`（参照） |
+| `kind` | `namespace`, `type`, `method`, `property`, `field`, `event` |
+| `symbol` | `text`形式と同じ正規化シグネチャ（`--match exact`にそのまま使える） |
+| `container` | 参照の場合、その参照を含むメソッド。定義では空 |
+| `assembly_name` | アセンブリの完全名（`MyApp, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null`の形。カンマを含むため引用される。マニフェストを持たない単体の`.netmodule`ではモジュール名） |
+| `assembly_path` | 入力から見つけたままのファイルパス（`text`形式の`assembly:`行と同じ。相対パスのこともある） |
+| `document`, `line`, `column` | PDBから得たソース位置。位置が取れない場合は空。列が不明なら`column`だけ空 |
+| `il_offset` | 参照のIL位置。他の形式と同じ`IL_001A`表記の文字列（4桁に満たない16進は0埋め。文字列ソートは64KiBを超えるメソッド本体で数値順とずれる） |
+
+先頭にUTF-8のBOM（`EF BB BF`）を付けるので、WindowsのExcelでダブルクリックして開いても日本語のパスが文字化けしません。BOMを扱えないツールへ渡す場合は`tail -c +4`などで取り除いてください。改行は実行環境の既定（Windowsでは`CRLF`、それ以外は`LF`）です。
+
+フィールドはRFC 4180に沿って、`,`や`"`を含む場合だけ`"`で囲み、中の`"`は`""`に倍加します。ジェネリック引数を含むシグネチャ（`System.Func`2<System.Int32, System.String>`など）はカンマを含むため引用されます。制御文字・書式文字・孤立サロゲートは他の形式と同じく`\n`や`\uXXXX`の形に置き換えてから引用するので、1レコードは必ず物理1行に収まり、行単位で読むツールでも壊れません。
+
+Excelは`=`、`+`、`-`、`@`で始まるセルを数式として解釈することがあります。C#の識別子はこれらの文字で始まれないため通常の`symbol`では起きませんが、難読化されたアセンブリや信頼できないアセンブリの結果を開く場合は、値を改変しない方針のため、テキスト取込ウィザードで文字列列として読み込んでください。
 
 ## メタデータダンプ
 

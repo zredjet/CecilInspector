@@ -21,9 +21,10 @@ internal enum ReportPart
 
 /// <summary>
 /// Colors report parts with ANSI SGR sequences, or leaves text untouched. Only the text report
-/// is styled: msbuild format is machine-readable and the --output file never receives escape
-/// sequences (see <see cref="AnsiStrippingTextWriter"/>). User-controlled text has already been
-/// through <see cref="TextSanitizer"/>, so every ESC in a styled stream is one of ours.
+/// is styled: the msbuild and csv formats are machine-readable, and the --output file never
+/// receives escape sequences (see <see cref="AnsiStrippingTextWriter"/>). User-controlled text
+/// has already been through <see cref="TextSanitizer"/>, so every ESC in a styled stream is one
+/// of ours.
 /// </summary>
 internal sealed class ReportStyle
 {

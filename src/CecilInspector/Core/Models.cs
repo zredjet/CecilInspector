@@ -20,10 +20,13 @@ public enum HitKind
 
 public sealed record SourceLocation(string Document, int Line, int Column)
 {
-    public override string ToString() => Column > 0 ? $"{Document}:{Line}:{Column}" : $"{Document}:{Line}";
+    /// <summary>False when the sequence point carries no column (reported as 0).</summary>
+    public bool HasColumn => Column > 0;
+
+    public override string ToString() => HasColumn ? $"{Document}:{Line}:{Column}" : $"{Document}:{Line}";
 
     /// <summary>MSBuild canonical origin, e.g. <c>File.cs(12,5)</c>.</summary>
-    public string ToMsBuildString() => Column > 0 ? $"{Document}({Line},{Column})" : $"{Document}({Line})";
+    public string ToMsBuildString() => HasColumn ? $"{Document}({Line},{Column})" : $"{Document}({Line})";
 }
 
 public sealed record SearchHit(

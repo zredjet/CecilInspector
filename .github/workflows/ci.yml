@@ -50,6 +50,12 @@ jobs:
           "$EXE" search tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll EstimateTarget \
             --kind method --match exact --scope references --format msbuild > smoke-msbuild.txt
           grep -Eq '^.+\([0-9]+,[0-9]+\): info CI0002: ' smoke-msbuild.txt
+          "$EXE" search tests/CecilInspector.Tests/bin/Release/net10.0/CecilInspector.Tests.dll EstimateTarget \
+            --kind method --match exact --symbols off --format csv > smoke.csv 2> smoke-csv.err
+          head -c 3 smoke.csv | od -An -tx1 | tr -d ' \n' | grep -qx 'efbbbf'
+          grep -q 'scope,kind,symbol,container,assembly_name,assembly_path,document,line,column,il_offset' smoke.csv
+          grep -Eq '^definition,method,' smoke.csv
+          grep -qx 'Matches: 1' smoke-csv.err
       - uses: actions/upload-artifact@v7
         if: always()
         with:

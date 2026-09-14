@@ -517,14 +517,26 @@ public sealed class CommandLineTests
     }
 
     [Theory]
-    [InlineData("msbuild")]
-    [InlineData("MSBUILD")]
-    public void ParsesReportFormat(string value)
+    [InlineData("msbuild", ReportFormat.MsBuild)]
+    [InlineData("MSBUILD", ReportFormat.MsBuild)]
+    [InlineData("csv", ReportFormat.Csv)]
+    [InlineData("CSV", ReportFormat.Csv)]
+    public void ParsesReportFormat(string value, ReportFormat expected)
     {
         var result = CommandLine.Parse(["search", "a.dll", "Save", "--format", value]);
 
         var options = Assert.IsType<SearchOptions>(result.Options);
-        Assert.Equal(ReportFormat.MsBuild, options.Format);
+        Assert.Equal(expected, options.Format);
+    }
+
+    [Fact]
+    public void CsvFormatAllowsSymbolsOff()
+    {
+        var result = CommandLine.Parse(["search", "a.dll", "Save", "--format", "csv", "--symbols", "off"]);
+
+        var options = Assert.IsType<SearchOptions>(result.Options);
+        Assert.Equal(ReportFormat.Csv, options.Format);
+        Assert.Equal(SymbolMode.Off, options.SymbolMode);
     }
 
     [Fact]
