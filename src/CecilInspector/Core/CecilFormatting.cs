@@ -1,5 +1,7 @@
 using Mono.Cecil;
+using Mono.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace CecilInspector.Core;
 
@@ -181,7 +183,7 @@ internal static class CecilFormatting
         {
             // Generic arguments already belong to the caller's context: format them
             // structurally and never substitute them through the callee's parameters.
-            name += $"<{string.Join(", ", instance.GenericArguments.Select(Type))}>";
+            name += $"<{JoinTypes(instance.GenericArguments, PlainLeafFormatter)}>";
         }
 
         return name;
@@ -198,7 +200,7 @@ internal static class CecilFormatting
 
     private static string FormatMethod(MethodReference method, string declaringType, Func<TypeReference, string> leaf)
     {
-        var parameters = string.Join(", ", method.Parameters.Select(parameter => Format(parameter.ParameterType, leaf)));
+        var parameters = JoinParameterTypes(method.Parameters, leaf);
         return $"{declaringType}::{MethodName(method)}({parameters}) : {Format(method.ReturnType, leaf)}";
     }
 
@@ -226,7 +228,7 @@ internal static class CecilFormatting
         PinnedType pinned => $"{Format(pinned.ElementType, leaf)} pinned",
         FunctionPointerType functionPointer => FormatFunctionPointer(functionPointer, leaf),
         GenericInstanceType generic =>
-            $"{leaf(generic.ElementType)}<{string.Join(", ", generic.GenericArguments.Select(argument => Format(argument, leaf)))}>",
+            $"{leaf(generic.ElementType)}<{JoinTypes(generic.GenericArguments, leaf)}>",
         _ => leaf(type),
     };
 
@@ -293,9 +295,59 @@ internal static class CecilFormatting
 
     private static string FormatFunctionPointer(FunctionPointerType functionPointer, Func<TypeReference, string> leaf)
     {
-        var parameters = string.Join(", ",
-            functionPointer.Parameters.Select(parameter => Format(parameter.ParameterType, leaf)));
+        var parameters = JoinParameterTypes(functionPointer.Parameters, leaf);
         return $"method {Format(functionPointer.ReturnType, leaf)} *({parameters})";
+    }
+
+    // Index loops over Cecil's collections: the LINQ Select/Join pair boxed an enumerator and
+    // built an intermediate array per generic instance and per method signature, which was one
+    // of the largest allocation sources of a reference search.
+    private static string JoinTypes(Collection<TypeReference> types, Func<TypeReference, string> leaf)
+    {
+        switch (types.Count)
+        {
+            case 0:
+                return string.Empty;
+            case 1:
+                return Format(types[0], leaf);
+        }
+
+        var builder = new StringBuilder();
+        for (var index = 0; index < types.Count; index++)
+        {
+            if (index > 0)
+            {
+                builder.Append(", ");
+            }
+
+            builder.Append(Format(types[index], leaf));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string JoinParameterTypes(Collection<ParameterDefinition> parameters, Func<TypeReference, string> leaf)
+    {
+        switch (parameters.Count)
+        {
+            case 0:
+                return string.Empty;
+            case 1:
+                return Format(parameters[0].ParameterType, leaf);
+        }
+
+        var builder = new StringBuilder();
+        for (var index = 0; index < parameters.Count; index++)
+        {
+            if (index > 0)
+            {
+                builder.Append(", ");
+            }
+
+            builder.Append(Format(parameters[index].ParameterType, leaf));
+        }
+
+        return builder.ToString();
     }
 
     private static string ScopeIdentity(TypeReference type) => type.Scope switch

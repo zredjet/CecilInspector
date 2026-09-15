@@ -12,9 +12,19 @@
     <!-- Only for the LibraryImport source generator (console virtual-terminal switch on Windows). -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- A batch tool: background GC only adds overhead to an allocation-heavy scan, and
-         non-concurrent collections finish sooner (measured ~20% on a parallel reference search). -->
+         non-concurrent collections finish sooner (measured ~20% on a parallel reference search).
+         The workstation GC collects on one thread, which stalls every scanning thread and caps
+         the parallel scan at roughly the sequential time on hundreds of files; the server GC
+         with a few heaps collects in parallel (700 DLLs: 15s to 6s) at the cost of a larger
+         heap, which ConserveMemory keeps in check. DOTNET_gcServer=0 restores the old behavior. -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.HeapCount" Value="4" />
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="9" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />

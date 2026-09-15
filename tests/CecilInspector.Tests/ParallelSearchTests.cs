@@ -51,6 +51,44 @@ public sealed class ParallelSearchTests
     }
 
     [Fact]
+    public void ParallelScanSharesASiblingDependencyAndReleasesItAfterwards()
+    {
+        using var temp = new TempDirectory();
+        var model = Path.Combine(temp.Path, "Model.dll");
+        ResolverIntegrationTests.CreateModelAssembly(model, "get_Logical", "Logical");
+        for (var index = 0; index < 6; index++)
+        {
+            ResolverIntegrationTests.CreateCallerAssembly(Path.Combine(temp.Path, $"Caller{index}.dll"), "get_Logical");
+        }
+
+        var options = new SearchOptions(
+            temp.Path, "Logical", SearchKinds.Property, SearchScope.References, MatchMode.Exact, IgnoreCase: true, Recursive: true,
+            SymbolMode.Off, 100, null, [], Parallelism: 1);
+
+        var sequential = new AssemblySearcher().Search(options);
+
+        // Every caller's accessor reference was classified as the property through the one
+        // shared copy of Model.dll, so the dependency must have resolved for all of them.
+        Assert.Equal(6, sequential.Hits.Count);
+        Assert.All(sequential.Hits, hit => Assert.Equal(HitKind.Property, hit.Kind));
+        Assert.Empty(sequential.Errors);
+
+        // Repeated because a race in the shared resolver would show up only some of the time.
+        for (var run = 0; run < 3; run++)
+        {
+            var parallel = new AssemblySearcher().Search(options with { Parallelism = 8 });
+
+            Assert.Equal(sequential.Hits, parallel.Hits);
+            Assert.Empty(parallel.Errors);
+        }
+
+        // The pool closed the directory's resolver with its last file, so nothing holds the
+        // dependency open after the search.
+        using var exclusive = new FileStream(model, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Assert.True(exclusive.Length > 0);
+    }
+
+    [Fact]
     public void EffectiveParallelismNeverExceedsTheFileCountOrEight()
     {
         var options = new SearchOptions("in", "x", SearchKinds.All, SearchScope.Definitions, MatchMode.Contains, IgnoreCase: true, Recursive: true, SymbolMode.Off, 10, null, []);

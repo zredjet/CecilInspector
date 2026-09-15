@@ -1,6 +1,7 @@
 using CecilInspector.Cli;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace CecilInspector.Core;
@@ -37,12 +38,14 @@ public sealed class AssemblySearcher
         var withSymbols = 0;
         var symbolMode = EffectiveSymbolMode(options);
         using var frameworkResolver = CecilResolverFactory.CreateFrameworkResolver();
-        var resolutions = new MemberResolutionCache(frameworkResolver);
+        using var resolvers = new ResolverPool(files, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
+        var resolutions = new MemberResolutionCache();
 
         // Files are independent, so they are scanned in parallel and their outcomes merged in
         // input order, which keeps the report identical to a sequential run. Each file stages
-        // its own hits, diagnostics and resolution failures; only the framework resolver is
-        // shared (it locks), so memory grows with the degree of parallelism, not the file count.
+        // its own hits, diagnostics and resolution failures; the resolvers are shared per
+        // directory (they lock), so memory grows with the degree of parallelism and the
+        // dependencies of the directories in flight, not with the file count.
         var outcomes = new FileOutcome[files.Count];
         var retained = new int[files.Count];
         Array.Fill(retained, -1);
@@ -57,9 +60,8 @@ public sealed class AssemblySearcher
                 options,
                 matcher,
                 symbolMode,
-                referenceDirectories,
                 discovery,
-                frameworkResolver,
+                resolvers,
                 resolutions,
                 cancellationToken);
             Volatile.Write(ref retained[index], outcome.Hits.Hits.Count);
@@ -78,9 +80,11 @@ public sealed class AssemblySearcher
         {
             try
             {
-                Parallel.For(
-                    0,
-                    files.Count,
+                // Largest files first, handed out one at a time: the wall time of a parallel
+                // scan is bounded by the biggest file, and a range partition that leaves it
+                // for the end would add its whole duration as a tail.
+                Parallel.ForEach(
+                    Partitioner.Create(LargestFirst(files), EnumerablePartitionerOptions.NoBuffering),
                     new ParallelOptions { MaxDegreeOfParallelism = parallelism, CancellationToken = cancellationToken },
                     index => outcomes[index] = Scan(index));
             }
@@ -132,6 +136,34 @@ public sealed class AssemblySearcher
     }
 
     /// <summary>
+    /// The indices of the files ordered by descending size, so the parallel scan starts the
+    /// longest work first. A file whose size cannot be read sorts last; ties keep input order.
+    /// </summary>
+    private static int[] LargestFirst(IReadOnlyList<string> files)
+    {
+        var sizes = new long[files.Count];
+        for (var index = 0; index < files.Count; index++)
+        {
+            try
+            {
+                sizes[index] = new FileInfo(files[index]).Length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                sizes[index] = -1;
+            }
+        }
+
+        var order = Enumerable.Range(0, files.Count).ToArray();
+        Array.Sort(order, (left, right) =>
+        {
+            var bySize = sizes[right].CompareTo(sizes[left]);
+            return bySize != 0 ? bySize : left.CompareTo(right);
+        });
+        return order;
+    }
+
+    /// <summary>
     /// How many hits a file's stage still needs to keep so the report can show them: the limit
     /// minus what earlier files retained. Files that are still running count as zero, which can
     /// only over-estimate (their hits are merged first and drop the excess), never lose a hit.
@@ -157,9 +189,8 @@ public sealed class AssemblySearcher
         SearchOptions options,
         SearchMatcher matcher,
         SymbolMode symbolMode,
-        IReadOnlyList<string> referenceDirectories,
         AssemblyDiscoveryResult discovery,
-        IdentityAwareAssemblyResolver frameworkResolver,
+        ResolverPool resolvers,
         MemberResolutionCache resolutions,
         CancellationToken cancellationToken)
     {
@@ -174,8 +205,7 @@ public sealed class AssemblySearcher
         var resolutionDiagnostics = new ResolutionDiagnostics(errors);
         var succeeded = false;
         var hasSymbols = false;
-        using var resolver = CecilResolverFactory.Create(
-            file, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
+        var resolver = resolvers.Rent(file);
         try
         {
             using (var module = CecilModuleReader.Read(file, symbolMode, resolver, out var symbolWarning))
@@ -208,6 +238,7 @@ public sealed class AssemblySearcher
         }
         finally
         {
+            resolvers.Return(file);
             resolutionDiagnostics.Flush();
         }
 
@@ -580,13 +611,14 @@ public sealed class AssemblySearcher
     /// MethodSemantics). Pure: the diagnostics for an unresolved dependency are returned, not
     /// recorded, so the result can be shared by every file that references the same member.
     /// </summary>
-    private static MemberResolution ResolveMemberCandidates(MethodReference method, SearchOptions options)
+    /// <param name="symbol">The canonical <see cref="CecilFormatting.Method(MethodReference)"/> of the reference, rendered once by the caller.</param>
+    private static MemberResolution ResolveMemberCandidates(MethodReference method, string symbol, SearchOptions options)
     {
         if (method.DeclaringType.IsArray)
         {
             // Get/Set/Address/.ctor on an array type are pseudo-methods the runtime synthesizes;
             // there is no definition to resolve, so their dependency is not missing.
-            return new MemberResolution(UnresolvedCandidates(method, options), false, null, null);
+            return new MemberResolution(UnresolvedCandidates(method, symbol, options), false, null);
         }
 
         try
@@ -608,8 +640,7 @@ public sealed class AssemblySearcher
                             CecilFormatting.MemberName(method.DeclaringType, logicalName),
                             CecilFormatting.Property(property, method))] : [],
                         false,
-                        null,
-                        definition.Module);
+                        null);
                 }
 
                 if (owner?.Event is { } @event)
@@ -624,58 +655,46 @@ public sealed class AssemblySearcher
                             CecilFormatting.MemberName(method.DeclaringType, logicalName),
                             CecilFormatting.Event(@event, method))] : [],
                         false,
-                        null,
-                        definition.Module);
+                        null);
                 }
 
                 return new MemberResolution(
-                    options.Kinds.Includes(HitKind.Method) ? [MethodCandidate(method, MethodLogicalName(definition))] : [],
+                    options.Kinds.Includes(HitKind.Method) ? [MethodCandidate(method, symbol, MethodLogicalName(definition))] : [],
                     false,
-                    null,
-                    definition.Module);
+                    null);
             }
 
-            return new MemberResolution(UnresolvedCandidates(method, options), true, null, null);
+            return new MemberResolution(UnresolvedCandidates(method, symbol, options), true, null);
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverableAssemblyError(ex))
         {
-            return new MemberResolution(UnresolvedCandidates(method, options), true, AssemblyResolutionDetail.Describe(ex), null);
+            return new MemberResolution(UnresolvedCandidates(method, symbol, options), true, AssemblyResolutionDetail.Describe(ex));
         }
     }
 
     /// <param name="Unresolved">True when the dependency could not be resolved; the reference is then reported as incomplete.</param>
     /// <param name="Reason">The resolver's explanation of a failure, when it threw one.</param>
-    /// <param name="DefinitionModule">The module the definition was found in, when it was.</param>
     private sealed record MemberResolution(
         IReadOnlyList<MemberCandidate> Candidates,
         bool Unresolved,
-        string? Reason,
-        ModuleDefinition? DefinitionModule);
+        string? Reason);
 
     /// <summary>
-    /// Run-wide cache of member resolutions that every file in a folder would repeat: members
-    /// of framework assemblies (resolved through the shared framework resolver) and members of
-    /// dependencies that cannot be resolved at all. Resolving walks the dependency's metadata
-    /// under Cecil's module lock, which the files scanned in parallel would otherwise contend
-    /// for on every reference to the same framework member. The key is the referencing file's
-    /// folder, the dependency's identity and the reference's canonical symbol, which unlike
-    /// Cecil's FullName renders generic parameters by position.
+    /// Run-wide cache of member resolutions, which every file in a folder would otherwise
+    /// repeat. Resolving walks the dependency's metadata under Cecil's module lock, which the
+    /// files scanned in parallel would contend for on every reference to the same member. The
+    /// key is the referencing file's folder (which decides the probe order and therefore the
+    /// dependency's file), the dependency's identity and the reference's canonical symbol,
+    /// which unlike Cecil's FullName renders generic parameters by position. Entries hold
+    /// only strings, so they outlive the resolvers that produced them.
     /// </summary>
-    private sealed class MemberResolutionCache(IdentityAwareAssemblyResolver frameworkResolver)
+    private sealed class MemberResolutionCache
     {
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, MemberResolution> _entries =
-            new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<(string Directory, string Scope, string Symbol), MemberResolution> _entries = new();
 
-        public bool TryGet(string key, out MemberResolution resolution) => _entries.TryGetValue(key, out resolution!);
+        public bool TryGet((string, string, string) key, out MemberResolution resolution) => _entries.TryGetValue(key, out resolution!);
 
-        public void Share(string key, MemberResolution resolution)
-        {
-            if (resolution.Unresolved ||
-                (resolution.DefinitionModule is { } module && ReferenceEquals(module.AssemblyResolver, frameworkResolver)))
-            {
-                _entries.TryAdd(key, resolution);
-            }
-        }
+        public void Share((string, string, string) key, MemberResolution resolution) => _entries.TryAdd(key, resolution);
     }
 
     /// <summary>
@@ -684,14 +703,14 @@ public sealed class AssemblySearcher
     /// reported both as an ordinary method and as the property/event it most likely belongs to,
     /// which avoids false negatives when the dependency is missing.
     /// </summary>
-    private static List<MemberCandidate> UnresolvedCandidates(MethodReference method, SearchOptions options)
+    private static List<MemberCandidate> UnresolvedCandidates(MethodReference method, string symbol, SearchOptions options)
     {
         var candidates = new List<MemberCandidate>(2);
         if (options.Kinds.Includes(HitKind.Method))
         {
             // A dotted name is an explicit interface implementation; matching its trailing
             // member name keeps the answer the same whether or not the dependency resolved.
-            candidates.Add(MethodCandidate(method, CecilFormatting.ExplicitMemberName(method.Name)));
+            candidates.Add(MethodCandidate(method, symbol, CecilFormatting.ExplicitMemberName(method.Name)));
         }
 
         if (options.Kinds.Includes(HitKind.Property) && CecilFormatting.IsPropertyAccessorName(method.Name))
@@ -721,27 +740,31 @@ public sealed class AssemblySearcher
         return candidates;
     }
 
-    private static MemberCandidate MethodCandidate(MethodReference method, string logicalName)
+    private static MemberCandidate MethodCandidate(MethodReference method, string symbol, string logicalName)
     {
+        var declaringType = CecilFormatting.Type(method.DeclaringType);
         return new MemberCandidate(
             HitKind.Method,
             method.Name,
             logicalName,
-            CecilFormatting.MemberName(method.DeclaringType, method.Name),
-            CecilFormatting.MemberName(method.DeclaringType, logicalName),
-            CecilFormatting.Method(method));
+            CecilFormatting.MemberName(declaringType, method.Name),
+            CecilFormatting.MemberName(declaringType, logicalName),
+            symbol);
     }
 
+    // The logical name only differs from the metadata name for an explicit interface
+    // implementation, whose name is dotted; for any other name the override check (which
+    // reads the MethodImpl table under Cecil's module lock every time) is skipped.
     private static string MethodLogicalName(MethodDefinition method) =>
-        method.HasOverrides ? CecilFormatting.ExplicitMemberName(method.Name) : method.Name;
+        method.Name.Contains('.') && method.HasOverrides ? CecilFormatting.ExplicitMemberName(method.Name) : method.Name;
 
     private static string PropertyLogicalName(PropertyDefinition property) =>
-        HasOverrides(property.GetMethod, property.SetMethod, property.OtherMethods)
+        property.Name.Contains('.') && HasOverrides(property.GetMethod, property.SetMethod, property.OtherMethods)
             ? CecilFormatting.ExplicitMemberName(property.Name)
             : property.Name;
 
     private static string EventLogicalName(EventDefinition @event) =>
-        HasOverrides(@event.AddMethod, @event.RemoveMethod, @event.OtherMethods.Append(@event.InvokeMethod))
+        @event.Name.Contains('.') && HasOverrides(@event.AddMethod, @event.RemoveMethod, @event.OtherMethods.Append(@event.InvokeMethod))
             ? CecilFormatting.ExplicitMemberName(@event.Name)
             : @event.Name;
 
@@ -886,6 +909,7 @@ public sealed class AssemblySearcher
 
         private readonly Stack<TypeReference> _expansionStack = new(16);
         private readonly List<(TypeReference Type, TypeNames Names)> _expanded = new(16);
+        private readonly List<TypeTarget> _targets = new(16);
         private readonly Dictionary<string, string> _firstIdentity = new(StringComparer.Ordinal);
         private readonly HashSet<string> _collisions = new(StringComparer.Ordinal);
         private readonly HashSet<string> _seenTypes = new(StringComparer.Ordinal);
@@ -898,7 +922,7 @@ public sealed class AssemblySearcher
             MemberResolutionCache shared)
         {
             _file = file;
-            _directory = Path.GetDirectoryName(file) ?? string.Empty;
+            _directory = CecilResolverFactory.DirectoryOf(file);
             _options = options;
             _diagnostics = diagnostics;
             _shared = shared;
@@ -918,19 +942,20 @@ public sealed class AssemblySearcher
         private MethodCandidates Resolve(MethodReference method)
         {
             MemberResolution? resolution = null;
-            string? key = null;
+            (string, string, string)? key = null;
+            var symbol = CecilFormatting.Method(method);
             if (method.DeclaringType.GetElementType().Scope is AssemblyNameReference scope)
             {
-                key = $"{_directory}\0{scope.FullName}\0{CecilFormatting.Method(method)}";
-                _shared.TryGet(key, out resolution);
+                key = (_directory, scope.FullName, symbol);
+                _shared.TryGet(key.Value, out resolution);
             }
 
             if (resolution is null)
             {
-                resolution = ResolveMemberCandidates(method, _options);
+                resolution = ResolveMemberCandidates(method, symbol, _options);
                 if (key is not null)
                 {
-                    _shared.Share(key, resolution);
+                    _shared.Share(key.Value, resolution);
                 }
             }
 
@@ -1035,7 +1060,8 @@ public sealed class AssemblySearcher
 
             _seenTypes.Clear();
             _seenNamespaces.Clear();
-            var targets = new List<TypeTarget>(_expanded.Count);
+            var targets = _targets;
+            targets.Clear();
             foreach (var (type, names) in _expanded)
             {
                 var symbol = _collisions.Contains(names.Unscoped) ? names.Identity : names.Unscoped;

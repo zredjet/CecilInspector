@@ -370,7 +370,7 @@ public sealed class ResolverIntegrationTests
         assembly.Write(path);
     }
 
-    private static void CreateModelAssembly(
+    internal static void CreateModelAssembly(
         string path,
         string getterName,
         string? propertyName,
@@ -403,7 +403,7 @@ public sealed class ResolverIntegrationTests
         assembly.Write(path);
     }
 
-    private static void CreateCallerAssembly(
+    internal static void CreateCallerAssembly(
         string path,
         string getterName,
         Version? modelVersion = null,

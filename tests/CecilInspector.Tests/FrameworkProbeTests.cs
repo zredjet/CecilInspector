@@ -121,6 +121,45 @@ public sealed class FrameworkProbeTests
         Assert.NotEmpty(second.MainModule.Types);
     }
 
+    [Fact]
+    public void ResolverPoolSharesOneResolverPerDirectoryAndClosesItWithTheLastFile()
+    {
+        using var temp = new TempDirectory();
+        var app = temp.CreateSubdirectory("app");
+        var other = temp.CreateSubdirectory("other");
+        WriteAssembly(Path.Combine(app, "Model.dll"), new Version(1, 0, 0, 0));
+        var name = new AssemblyNameReference("Model", new Version(1, 0, 0, 0));
+        var first = Path.Combine(app, "First.dll");
+        var second = Path.Combine(app, "Second.dll");
+        var elsewhere = Path.Combine(other, "Third.dll");
+        using var framework = CecilResolverFactory.CreateFrameworkResolver([], []);
+        using var pool = new ResolverPool([first, second, elsewhere], [], [app, other], framework);
+
+        var firstResolver = pool.Rent(first);
+        var secondResolver = pool.Rent(second);
+        var otherResolver = pool.Rent(elsewhere);
+
+        // One resolver per directory: the sibling dependency is opened once for both files,
+        // and a file in another directory (a different probe order) gets its own.
+        Assert.Same(firstResolver, secondResolver);
+        Assert.NotSame(firstResolver, otherResolver);
+        var resolved = firstResolver.Resolve(name);
+        var probes = firstResolver.ProbeCount;
+        Assert.Same(resolved, secondResolver.Resolve(name));
+        Assert.Equal(probes, firstResolver.ProbeCount);
+        Assert.Equal(2, pool.OpenCount);
+
+        // The directory's resolver stays open until its last file has returned it.
+        pool.Return(first);
+        Assert.Equal(2, pool.OpenCount);
+        Assert.NotEmpty(resolved.MainModule.Types);
+        pool.Return(second);
+        Assert.Equal(1, pool.OpenCount);
+        pool.Return(elsewhere);
+        Assert.Equal(0, pool.OpenCount);
+        Assert.Throws<ObjectDisposedException>(() => pool.Rent(first));
+    }
+
     [Theory]
     [InlineData("..")]
     [InlineData(".")]

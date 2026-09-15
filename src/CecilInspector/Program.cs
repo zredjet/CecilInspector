@@ -54,9 +54,13 @@ try
     var color = AnsiConsole.ShouldColor(options.Color, Console.IsOutputRedirected, Environment.GetEnvironmentVariable) &&
                 (Console.IsOutputRedirected || AnsiConsole.TryEnableVirtualTerminal());
     var style = color ? ReportStyle.Ansi : ReportStyle.None;
+    // Console.Out flushes after every write, which made a large report cost one system call
+    // per line; the report goes through a buffered writer instead and is flushed before the
+    // summary and diagnostics on stderr, and by the using block on every other exit.
+    using var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false), 1 << 16) { AutoFlush = false };
     // The report file is plain text even when the console is colored.
     var fileWriter = reportFile is null ? null : color ? new AnsiStrippingTextWriter(reportFile.Writer) : reportFile.Writer;
-    var writer = fileWriter is null ? Console.Out : new TeeTextWriter(Console.Out, fileWriter);
+    TextWriter writer = fileWriter is null ? stdout : new TeeTextWriter(stdout, fileWriter);
 
     IReadOnlyList<ScanError> errors;
     IReadOnlyList<ScanError> warnings;

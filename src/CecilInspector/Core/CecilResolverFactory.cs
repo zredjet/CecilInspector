@@ -80,6 +80,13 @@ internal static class CecilResolverFactory
             CreateFrameworkResolver(frameworkDirectories, gacRoots),
             ownsFallback: true);
 
+    internal static IdentityAwareAssemblyResolver CreateForPool(
+        string targetFile,
+        IReadOnlyList<string> referenceDirectories,
+        IReadOnlyList<string> discoveredDirectories,
+        IdentityAwareAssemblyResolver frameworkResolver) =>
+        Create(targetFile, referenceDirectories, discoveredDirectories, frameworkResolver, ownsFallback: false);
+
     private static IdentityAwareAssemblyResolver Create(
         string targetFile,
         IReadOnlyList<string> referenceDirectories,
@@ -91,9 +98,12 @@ internal static class CecilResolverFactory
             probeFrameworkLocations: false, [], frameworkResolver, ownsFallback, DebugSwitch.IsEnabled);
         AddDirectories(
             resolver,
-            [Path.GetDirectoryName(Path.GetFullPath(targetFile))!, .. referenceDirectories, .. discoveredDirectories]);
+            [DirectoryOf(targetFile), .. referenceDirectories, .. discoveredDirectories]);
         return resolver;
     }
+
+    /// <summary>The directory whose resolver serves <paramref name="targetFile"/>; the key of <see cref="ResolverPool"/>.</summary>
+    internal static string DirectoryOf(string targetFile) => Path.GetDirectoryName(Path.GetFullPath(targetFile))!;
 
     private static void AddDirectories(IdentityAwareAssemblyResolver resolver, IEnumerable<string> directories)
     {
@@ -108,6 +118,108 @@ internal static class CecilResolverFactory
             if (seen.Add(directory))
             {
                 resolver.AddSearchDirectory(directory);
+            }
+        }
+    }
+}
+
+/// <summary>
+/// One dependency resolver per input directory, shared by every file of that directory for the
+/// duration of a run. A per-file resolver's probe order (the file's own folder, --reference-path,
+/// the folders of the input, the framework fallback) is a pure function of the file's directory,
+/// so files of one directory can share the resolver and its opened dependencies: a folder of
+/// sibling assemblies then opens each sibling once instead of once per referencing file, and
+/// files scanned in parallel no longer hold one copy of the same dependency each. Resolvers are
+/// reference counted by the files still to be scanned in their directory and disposed as soon
+/// as the last one returns, so a recursive walk over many directories does not keep every
+/// dependency of every directory open until the end.
+/// </summary>
+internal sealed class ResolverPool : IDisposable
+{
+    private readonly IReadOnlyList<string> _referenceDirectories;
+    private readonly IReadOnlyList<string> _discoveredDirectories;
+    private readonly IdentityAwareAssemblyResolver _frameworkResolver;
+    private readonly ConcurrentDictionary<string, Entry> _entries = new(IdentityAwareAssemblyResolver.PathComparer);
+
+    public ResolverPool(
+        IEnumerable<string> files,
+        IReadOnlyList<string> referenceDirectories,
+        IReadOnlyList<string> discoveredDirectories,
+        IdentityAwareAssemblyResolver frameworkResolver)
+    {
+        _referenceDirectories = referenceDirectories;
+        _discoveredDirectories = discoveredDirectories;
+        _frameworkResolver = frameworkResolver;
+        foreach (var file in files)
+        {
+            _entries.GetOrAdd(CecilResolverFactory.DirectoryOf(file), static _ => new Entry()).Remaining++;
+        }
+    }
+
+    /// <summary>Number of resolvers currently open; exposed for tests.</summary>
+    internal int OpenCount => _entries.Values.Count(entry => entry.IsOpen);
+
+    /// <summary>
+    /// The resolver for the file's directory, created on first use. Every <see cref="Rent"/> must
+    /// be paired with a <see cref="Return"/> of the same file.
+    /// </summary>
+    public IdentityAwareAssemblyResolver Rent(string targetFile)
+    {
+        var directory = CecilResolverFactory.DirectoryOf(targetFile);
+        var entry = _entries.GetOrAdd(directory, static _ => new Entry());
+        lock (entry)
+        {
+            ObjectDisposedException.ThrowIf(entry.Disposed, this);
+            return entry.Resolver ??= CecilResolverFactory.CreateForPool(
+                targetFile, _referenceDirectories, _discoveredDirectories, _frameworkResolver);
+        }
+    }
+
+    /// <summary>Releases the file's claim; the directory's resolver is disposed once no file of it remains.</summary>
+    public void Return(string targetFile)
+    {
+        if (!_entries.TryGetValue(CecilResolverFactory.DirectoryOf(targetFile), out var entry))
+        {
+            return;
+        }
+
+        lock (entry)
+        {
+            if (--entry.Remaining <= 0)
+            {
+                entry.Close();
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        foreach (var entry in _entries.Values)
+        {
+            lock (entry)
+            {
+                entry.Close();
+            }
+        }
+    }
+
+    private static string CecilResolverPool_DirectoryOf(string targetFile) => CecilResolverFactory.DirectoryOf(targetFile);
+
+    private sealed class Entry
+    {
+        public int Remaining;
+        public IdentityAwareAssemblyResolver? Resolver;
+        public bool Disposed;
+
+        public bool IsOpen => Resolver is not null && !Disposed;
+
+        public void Close()
+        {
+            if (!Disposed)
+            {
+                Disposed = true;
+                Resolver?.Dispose();
+                Resolver = null;
             }
         }
     }
@@ -175,8 +287,9 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         Resolve(name, new ReaderParameters { AssemblyResolver = this });
 
     /// <summary>
-    /// Serialized: the framework resolver is shared by the files scanned in parallel, and the
-    /// per-file resolver is only ever used by one thread, so the lock is uncontended there.
+    /// Serialized: both the framework resolver and a directory's resolver (see
+    /// <see cref="ResolverPool"/>) are shared by the files scanned in parallel; a hit is answered
+    /// without the lock, only a miss probes the disk under it.
     /// </summary>
     public override AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters)
     {
@@ -448,7 +561,7 @@ internal sealed class IdentityAwareAssemblyResolver : DefaultAssemblyResolver
         reasons.Add(reason);
     }
 
-    private static StringComparer PathComparer =>
+    internal static StringComparer PathComparer =>
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     /// <summary>Null when the candidate binds to the request; otherwise why it does not.</summary>

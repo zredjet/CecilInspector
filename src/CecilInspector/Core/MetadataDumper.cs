@@ -31,12 +31,12 @@ public sealed class MetadataDumper
         var warnings = new List<ScanError>();
         var succeeded = 0;
         using var frameworkResolver = CecilResolverFactory.CreateFrameworkResolver();
+        using var resolvers = new ResolverPool(discovery.Files, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
 
         foreach (var file in discovery.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var resolver = CecilResolverFactory.Create(
-                file, referenceDirectories, discovery.SearchDirectories, frameworkResolver);
+            var resolver = resolvers.Rent(file);
             try
             {
                 using var module = CecilModuleReader.Read(file, options.SymbolMode, resolver, out var symbolWarning);
@@ -66,6 +66,10 @@ public sealed class MetadataDumper
             {
                 errors.Add(new ScanError(file, ExceptionPolicy.UserMessage(ex), ex));
                 writer.WriteLine($"Incomplete assembly: {TextSanitizer.Escape(file)}");
+            }
+            finally
+            {
+                resolvers.Return(file);
             }
         }
 
