@@ -32,7 +32,7 @@ public static class CommandLine
                                  要約行は標準エラーへ出す
           --case-sensitive       大文字・小文字を区別する (既定: 区別しない)
           --symbols <value>      auto | off | required (既定: auto)
-          --max-results <number> 保持して表示する最大件数 (総件数は別途集計、既定: 1000)
+          --max-results <number> 保持して表示する最大件数 (総件数は別途集計、既定: 20000)
           --no-recursive         フォルダのサブディレクトリを検索しない
           --output, -o <file>    コンソールと同じ内容を新規UTF-8ファイルへ保存する
           --reference-path <dir> 依存アセンブリの検索フォルダ (複数回指定可)
@@ -121,7 +121,7 @@ public static class CommandLine
         var ignoreCase = true;
         var recursive = true;
         var symbolMode = SymbolMode.Auto;
-        var maxResults = 1000;
+        var maxResults = 20000;
         string? output = null;
         var referencePaths = new List<string>();
         var quiet = false;

@@ -80,7 +80,7 @@ cecil-inspector search ./bin Save --kind method --scope all --format csv --outpu
 | `--format` | `text`, `msbuild`（エディターがジャンプできる`path(line,col):`形式。`--symbols off`とは併用不可。名前空間・型・フィールドの定義だけを検索する場合はPDBを読まないため位置なしの行になる）, `csv`（見出し行と1件1行のカンマ区切り。[CSV出力](#csv出力)を参照） | `text` |
 | `--case-sensitive` | 大文字・小文字を区別 | 区別しない |
 | `--symbols` | `auto`, `off`, `required` | `auto` |
-| `--max-results` | メモリに保持して表示する最大件数（総件数は全件集計） | `1000` |
+| `--max-results` | メモリに保持して表示する最大件数（総件数は全件集計） | `20000` |
 | `--no-recursive` | サブフォルダを検索しない | 再帰検索 |
 | `--output`, `-o` | 新規作成するUTF-8出力ファイル | なし |
 | `--reference-path` | 依存アセンブリの検索フォルダ（複数回指定可） | 入力内のアセンブリ所在フォルダ |
